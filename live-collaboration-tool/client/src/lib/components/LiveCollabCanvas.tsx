@@ -1,6 +1,79 @@
 import React from "react";
 import { RealTimeDrawingManager } from "../collaboration/RealTimeDrawingManager";
 import { User, WebRTCConfig } from "../types";
+import { CanvasThumbnailNavigator } from "./CanvasThumbnailNavigator";
+
+// 디버깅용 뷰포트 좌표 오버레이 컴포넌트
+const ViewportDebugOverlay: React.FC<{
+  containerRef: React.RefObject<HTMLDivElement | null>;
+}> = ({ containerRef }) => {
+  const [scrollInfo, setScrollInfo] = React.useState({
+    scrollLeft: 0,
+    scrollTop: 0,
+    clientWidth: 0,
+    clientHeight: 0,
+    scrollWidth: 0,
+    scrollHeight: 0,
+  });
+
+  React.useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const updateScrollInfo = () => {
+      setScrollInfo({
+        scrollLeft: container.scrollLeft,
+        scrollTop: container.scrollTop,
+        clientWidth: container.clientWidth,
+        clientHeight: container.clientHeight,
+        scrollWidth: container.scrollWidth,
+        scrollHeight: container.scrollHeight,
+      });
+    };
+
+    updateScrollInfo();
+    container.addEventListener("scroll", updateScrollInfo, { passive: true });
+    window.addEventListener("resize", updateScrollInfo);
+
+    return () => {
+      container.removeEventListener("scroll", updateScrollInfo);
+      window.removeEventListener("resize", updateScrollInfo);
+    };
+  }, [containerRef]);
+
+  const container = containerRef.current;
+  if (!container) return null;
+
+  const containerRect = container.getBoundingClientRect();
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        top: containerRect.top + 10,
+        left: containerRect.left + 10,
+        padding: "8px",
+        backgroundColor: "rgba(255, 0, 0, 0.8)",
+        color: "white",
+        fontSize: "11px",
+        fontFamily: "monospace",
+        zIndex: 10001,
+        pointerEvents: "none",
+        borderRadius: "4px",
+        whiteSpace: "pre",
+        lineHeight: "1.4",
+        maxWidth: "300px",
+      }}
+    >
+      <div style={{ fontWeight: "bold", marginBottom: "4px" }}>캔버스 뷰포트:</div>
+      <div>Scroll: ({Math.round(scrollInfo.scrollLeft)}, {Math.round(scrollInfo.scrollTop)})</div>
+      <div>Viewport: {scrollInfo.clientWidth}x{scrollInfo.clientHeight}</div>
+      <div>Content: {scrollInfo.scrollWidth}x{scrollInfo.scrollHeight}</div>
+      <div>Top-Left: ({Math.round(scrollInfo.scrollLeft)}, {Math.round(scrollInfo.scrollTop)})</div>
+      <div>Bottom-Right: ({Math.round(scrollInfo.scrollLeft + scrollInfo.clientWidth)}, {Math.round(scrollInfo.scrollTop + scrollInfo.clientHeight)})</div>
+    </div>
+  );
+};
 
 export interface LiveCollabCanvasProps {
   serverUrl: string; // Y.js websocket 서버 (예: ws://localhost:5001)
@@ -10,6 +83,8 @@ export interface LiveCollabCanvasProps {
   height?: number;
   webrtcConfig?: WebRTCConfig;
   showToolbar?: boolean;
+  showThumbnail?: boolean; // 미리보기 네비게이션 표시 여부
+  thumbnailContainerRef?: React.RefObject<HTMLDivElement | null>; // 스크롤 가능한 컨테이너 ref
   onReady?: (api: { manager: RealTimeDrawingManager }) => void;
   onError?: (error: unknown) => void;
 }
@@ -27,6 +102,8 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
     ],
   },
   showToolbar = true,
+  showThumbnail = true,
+  thumbnailContainerRef,
   onReady,
   onError,
 }) => {
@@ -217,6 +294,37 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
     };
   }, [manager]);
 
+  // 6) Delete/Backspace 키로 선택된 객체 삭제
+  React.useEffect(() => {
+    if (!manager) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // Delete 키로 선택된 이미지 삭제
+      if (event.key === "Delete" || event.key === "Backspace") {
+        const target = event.target as HTMLElement | null;
+        if (
+          target &&
+          (target.tagName === "INPUT" ||
+            target.tagName === "TEXTAREA" ||
+            target.isContentEditable)
+        ) {
+          return;
+        }
+
+        const removed = manager.removeSelectedObject();
+        if (removed) {
+          event.preventDefault();
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [manager]);
+
   React.useEffect(() => {
     if (!hasTransformTarget) {
       setIsTransformHotkey(false);
@@ -257,10 +365,76 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
     }
 
     try {
+      // 가로 크기 제한 없음 (기본 동작)
       await manager.loadBackgroundImage(file);
       setHasBackground(true);
       const applied = manager.getBackgroundScale();
       setBackgroundScale(Number(applied.toFixed(2)));
+      
+      // 배경 이미지가 (0, 0)에서 시작하도록 스크롤을 (0, 0)으로 리셋
+      // 실제 스크롤 컨테이너를 찾아서 리셋
+      console.log("🔵 [LiveCollabCanvas] 배경 이미지 로드 후 스크롤 리셋 시작");
+      const resetScroll = () => {
+        // thumbnailContainer가 실제 스크롤 컨테이너인 경우
+        const scrollContainer = thumbnailContainer.current;
+        if (scrollContainer) {
+          console.log("🔵 [LiveCollabCanvas] thumbnailContainer 찾음, 현재 scrollTop:", scrollContainer.scrollTop, "scrollHeight:", scrollContainer.scrollHeight, "clientHeight:", scrollContainer.clientHeight);
+          scrollContainer.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+          scrollContainer.scrollTop = 0;
+          scrollContainer.scrollLeft = 0;
+          console.log("🔵 [LiveCollabCanvas] thumbnailContainer 스크롤 리셋 완료, scrollTop:", scrollContainer.scrollTop);
+        } else {
+          console.log("🔵 [LiveCollabCanvas] thumbnailContainer 없음, 부모 요소 확인");
+        }
+        
+        // containerRef도 확인
+        if (containerRef.current) {
+          console.log("🔵 [LiveCollabCanvas] containerRef 찾음, 현재 scrollTop:", containerRef.current.scrollTop);
+          containerRef.current.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+          containerRef.current.scrollTop = 0;
+          containerRef.current.scrollLeft = 0;
+          console.log("🔵 [LiveCollabCanvas] containerRef 스크롤 리셋 완료, scrollTop:", containerRef.current.scrollTop);
+        }
+        
+        // 부모 요소들도 확인 (실제 스크롤 컨테이너가 부모일 수 있음)
+        let parent = containerRef.current?.parentElement;
+        let found = false;
+        let depth = 0;
+        while (parent && depth < 10) {
+          const style = window.getComputedStyle(parent);
+          if (style.overflow === 'auto' || style.overflow === 'scroll' || 
+              style.overflowY === 'auto' || style.overflowY === 'scroll' ||
+              parent.scrollHeight > parent.clientHeight) {
+            console.log(`🔵 [LiveCollabCanvas] 부모 스크롤 컨테이너 (depth ${depth}) 찾음, 현재 scrollTop:`, parent.scrollTop, "scrollHeight:", parent.scrollHeight, "clientHeight:", parent.clientHeight);
+            parent.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+            parent.scrollTop = 0;
+            parent.scrollLeft = 0;
+            console.log(`🔵 [LiveCollabCanvas] 부모 스크롤 (depth ${depth}) 리셋 완료, scrollTop:`, parent.scrollTop);
+            found = true;
+            // break 제거 - 모든 스크롤 컨테이너 리셋
+          }
+          parent = parent.parentElement;
+          depth++;
+        }
+        
+        if (!found && !scrollContainer) {
+          console.warn("⚠️ [LiveCollabCanvas] 스크롤 컨테이너를 찾을 수 없음");
+        }
+      };
+      
+      // 즉시 리셋
+      resetScroll();
+      
+      // 캔버스 크기 조정이 완료된 후에도 다시 한 번 리셋 (안전장치)
+      setTimeout(() => {
+        console.log("🔵 [LiveCollabCanvas] 100ms 후 스크롤 리셋 재시도");
+        resetScroll();
+      }, 100);
+      
+      setTimeout(() => {
+        console.log("🔵 [LiveCollabCanvas] 300ms 후 스크롤 리셋 재시도");
+        resetScroll();
+      }, 300);
     } catch (error) {
       console.error("배경 이미지 로딩 실패:", error);
       alert("배경 이미지를 불러오는 중 오류가 발생했습니다.");
@@ -289,8 +463,34 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
     }
 
     try {
+      // 현재 뷰포트 중앙 계산 (PIXI 캔버스의 절대 좌표)
+      // 실제 스크롤 컨테이너 찾기 (thumbnailContainer 또는 부모 요소)
+      const scrollContainer = thumbnailContainer.current || containerRef.current;
+      let viewportX: number | undefined;
+      let viewportY: number | undefined;
+      
+      if (scrollContainer) {
+        // 스크롤 위치 + 뷰포트 중앙 = PIXI 캔버스의 절대 좌표
+        viewportX = scrollContainer.scrollLeft + scrollContainer.clientWidth / 2;
+        viewportY = scrollContainer.scrollTop + scrollContainer.clientHeight / 2;
+      } else {
+        // 스크롤 컨테이너를 찾지 못한 경우 부모 요소에서 찾기
+        let parent = containerRef.current?.parentElement;
+        while (parent) {
+          const style = window.getComputedStyle(parent);
+          if (style.overflow === 'auto' || style.overflow === 'scroll' || 
+              style.overflowY === 'auto' || style.overflowY === 'scroll') {
+            viewportX = parent.scrollLeft + parent.clientWidth / 2;
+            viewportY = parent.scrollTop + parent.clientHeight / 2;
+            break;
+          }
+          parent = parent.parentElement;
+        }
+      }
+
+      // 가로 크기 제한 없음 (기본 동작)
       for (const file of validFiles) {
-        await manager.addImageFromFile(file);
+        await manager.addImageFromFile(file, viewportX, viewportY);
       }
       setHasOverlay(true);
     } catch (error) {
@@ -372,8 +572,12 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
     }
   };
 
+  // 미리보기용 컨테이너 ref (외부에서 제공되지 않으면 내부 containerRef 사용)
+  const thumbnailContainer = thumbnailContainerRef || containerRef;
+
   return (
-    <div style={{ display: "inline-flex", gap: 16 }}>
+    <>
+      <div style={{ display: "inline-flex", gap: 16 }}>
       {showToolbar && (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <label style={{ fontSize: 12 }}>도구 선택</label>
@@ -591,16 +795,47 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
       )}
 
       <div
-        ref={containerRef}
         style={{
-          width,
-          height,
-          border: "2px solid #333",
-          backgroundColor: "#fff",
-          cursor: "crosshair",
+          position: "relative",
+          display: "inline-block",
         }}
-      />
+        onClick={() => {
+          // 캔버스 클릭 시 전역 상태에 이 manager 설정 및 미리보기 생성
+          if (manager && showThumbnail) {
+            (window as any).__activeCanvasManager = manager;
+            (window as any).__activeCanvasContainer = thumbnailContainer.current;
+            // 미리보기 생성 이벤트 발생
+            window.dispatchEvent(new CustomEvent('canvas-activated', { 
+              detail: { manager, container: thumbnailContainer.current } 
+            }));
+          }
+        }}
+      >
+        <div
+          ref={containerRef}
+          style={{
+            width,
+            height,
+            border: "2px solid #333",
+            backgroundColor: "#fff",
+            cursor: "crosshair",
+          }}
+        />
+        {showThumbnail && manager && (
+          <>
+            {/* 디버깅: 캔버스 뷰포트 좌표 표시 */}
+            {thumbnailContainer && thumbnailContainer.current && (
+              <ViewportDebugOverlay containerRef={thumbnailContainer} />
+            )}
+            <CanvasThumbnailNavigator
+              manager={manager}
+              containerRef={thumbnailContainer}
+            />
+          </>
+        )}
+      </div>
     </div>
+    </>
   );
 };
 

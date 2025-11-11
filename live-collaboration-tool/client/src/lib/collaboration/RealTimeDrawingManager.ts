@@ -598,12 +598,12 @@ export class RealTimeDrawingManager {
     return this.canvasManager.getTool();
   }
 
-  async loadBackgroundImage(file: File): Promise<void> {
-    await this.canvasManager.loadImageFromFile(file);
+  async loadBackgroundImage(file: File, maxWidth?: number): Promise<void> {
+    await this.canvasManager.loadImageFromFile(file, maxWidth);
     this.queueBackgroundStateSync(true);
   }
 
-  async addImageFromFile(file: File): Promise<void> {
+  async addImageFromFile(file: File, viewportX?: number, viewportY?: number, maxWidth?: number): Promise<void> {
     if (!this.canvasManager.isReady()) {
       try {
         await this.canvasManager.waitForInitialization();
@@ -614,37 +614,66 @@ export class RealTimeDrawingManager {
     }
 
     const dataUrl = await this.readFileAsDataUrl(file);
-    const { width, height, image } = await this.getImageInfo(dataUrl);
+    const { width: originalWidth, height: originalHeight, image } = await this.getImageInfo(dataUrl);
+    
+    // 가로 크기 제한 적용 (원본 이미지 유지, 스케일만 조절)
+    // finalWidth, finalHeight는 사용하지 않지만 스케일 계산을 위해 유지
+    
     const { width: canvasWidth, height: canvasHeight } =
       this.canvasManager.getCanvasSize();
-    const centerX = canvasWidth / 2;
-    const centerY = canvasHeight / 2;
+    
+    // 뷰포트 좌표가 제공되면 사용, 아니면 캔버스 중앙
+    const centerX = viewportX !== undefined ? viewportX : canvasWidth / 2;
+    const centerY = viewportY !== undefined ? viewportY : canvasHeight / 2;
 
     const id = this.yjsManager.addObject({
       type: "image",
       x: centerX,
       y: centerY,
       dataUrl,
-      width,
-      height,
-      scale: 1,
+      width: originalWidth, // 원본 크기 저장
+      height: originalHeight, // 원본 크기 저장
+      scale: maxWidth && originalWidth > maxWidth ? maxWidth / originalWidth : 1, // 스케일 계산
     });
 
+    // 이미지 객체 추가 (원본 크기 사용, 스케일로 크기 조절)
     await this.canvasManager.addImageObject(
       id,
       dataUrl,
       centerX,
       centerY,
-      width,
-      height,
-      1,
+      originalWidth, // 원본 크기
+      originalHeight, // 원본 크기
+      maxWidth && originalWidth > maxWidth ? maxWidth / originalWidth : 1, // 스케일
       image
     );
+    
+    // 렌더링 완료 후 콜백 호출
     this.onObjectsChange?.(this.yjsManager.getAllObjects());
+  }
+
+  removeSelectedObject(): boolean {
+    const selectedId = this.canvasManager.getSelectedObjectId();
+    if (!selectedId) {
+      return false;
+    }
+
+    // Y.js에서 객체 제거
+    this.yjsManager.removeObject(selectedId);
+    
+    // CanvasManager에서 객체 제거
+    this.canvasManager.removeObject(selectedId);
+    
+    this.onObjectsChange?.(this.yjsManager.getAllObjects());
+    return true;
   }
 
   setBackgroundScale(scale: number): void {
     this.canvasManager.setBackgroundScale(scale);
+  }
+
+  setBackgroundPosition(x: number, y: number): void {
+    this.canvasManager.setBackgroundPosition(x, y);
   }
 
   getBackgroundScale(): number {
