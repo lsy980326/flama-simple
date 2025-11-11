@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import "./index.css";
 import App from "./App";
 import DocumentViewerDemo from "./examples/DocumentViewerDemo";
+import WebtoonViewerDemo from "./examples/WebtoonViewerDemo";
 import reportWebVitals from "./reportWebVitals";
 
 // 전역 오류 핸들러 설정
@@ -64,8 +65,13 @@ window.addEventListener("unhandledrejection", (event) => {
 });
 
 const params = new URLSearchParams(window.location.search);
-const RootComponent =
-  params.get("view") === "doc" ? DocumentViewerDemo : App;
+const viewParam = params.get("view");
+let RootComponent = App;
+if (viewParam === "doc") {
+  RootComponent = DocumentViewerDemo;
+} else if (viewParam === "webtoon") {
+  RootComponent = WebtoonViewerDemo;
+}
 
 const root = ReactDOM.createRoot(
   document.getElementById("root") as HTMLElement

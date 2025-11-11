@@ -11,14 +11,21 @@ export { WebRTCDataChannelManager } from "./webrtc/WebRTCDataChannelManager";
 export { AwarenessManager } from "./collaboration/AwarenessManager";
 export { RealTimeDrawingManager } from "./collaboration/RealTimeDrawingManager";
 export { LiveCollabCanvas } from "./components/LiveCollabCanvas";
+export { CanvasThumbnailNavigator } from "./components/CanvasThumbnailNavigator";
 export {
   DocumentViewer,
   DefaultRenderHandle,
 } from "./components/DocumentViewer";
+export {
+  WebtoonViewer,
+  WEBTOON_WIDTH_OPTIONS,
+} from "./components/WebtoonViewer";
+export type { WebtoonWidth } from "./components/WebtoonViewer";
 export { TxtAdapter } from "./documents/adapters/TxtAdapter";
 export { DocxAdapter } from "./documents/adapters/DocxAdapter";
 export { MeAdapter } from "./documents/adapters/MeAdapter";
 export { HwpAdapter } from "./documents/adapters/HwpAdapter";
+export { ImageAdapter } from "./documents/adapters/ImageAdapter";
 export {
   MemoryStorageProvider,
 } from "./documents/storage/providers/MemoryStorageProvider";

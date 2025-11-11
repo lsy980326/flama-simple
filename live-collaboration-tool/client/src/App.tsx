@@ -1,5 +1,5 @@
 import React from "react";
-import { RealTimeDrawingManager, User, WebRTCConfig } from "./lib";
+import { RealTimeDrawingManager, User, WebRTCConfig, WEBTOON_WIDTH_OPTIONS } from "./lib";
 import "./App.css";
 
 function App() {
@@ -13,9 +13,13 @@ function App() {
   const [backgroundScale, setBackgroundScale] = React.useState(1);
   const [isTransformManual, setIsTransformManual] = React.useState(false);
   const [isTransformHotkey, setIsTransformHotkey] = React.useState(false);
+  const [webtoonWidth, setWebtoonWidth] = React.useState<number | "default">("default");
+  const DEFAULT_CANVAS_WIDTH = 800;
+  const canvasWrapperRef = React.useRef<HTMLDivElement>(null);
   const canvasContainerRef = React.useRef<HTMLDivElement>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const additionalImageInputRef = React.useRef<HTMLInputElement>(null);
+
   const hasTransformTarget = React.useMemo(
     () => hasBackgroundImage || hasImageObjects,
     [hasBackgroundImage, hasImageObjects]
@@ -213,6 +217,26 @@ function App() {
         setIsTransformHotkey(true);
         drawingManager?.setTransformHotkey(true);
       }
+      
+      // Delete 키로 선택된 이미지 삭제
+      if (event.key === "Delete" || event.key === "Backspace") {
+        const target = event.target as HTMLElement | null;
+        if (
+          target &&
+          (target.tagName === "INPUT" ||
+            target.tagName === "TEXTAREA" ||
+            target.isContentEditable)
+        ) {
+          return;
+        }
+        
+        if (drawingManager) {
+          const removed = drawingManager.removeSelectedObject();
+          if (removed) {
+            event.preventDefault();
+          }
+        }
+      }
     };
 
     const handleKeyUp = (event: KeyboardEvent) => {
@@ -256,12 +280,18 @@ function App() {
     }
 
     try {
-      await drawingManager.loadBackgroundImage(file);
+      // 현재 가로 크기 가져오기
+      const currentWidth = webtoonWidth === "default" ? DEFAULT_CANVAS_WIDTH : webtoonWidth;
+      
+      await drawingManager.loadBackgroundImage(file, currentWidth);
       setHasBackgroundImage(true);
       setBackgroundScale(
         Number(drawingManager.getBackgroundScale().toFixed(2))
       );
       setError(null);
+      
+      // 웹툰 모드: 캔버스 크기 조절 (기본 모드에서도 적용)
+      applyWebtoonWidth(webtoonWidth);
     } catch (uploadError) {
       console.error("이미지 업로드 실패:", uploadError);
       setError(
@@ -297,8 +327,24 @@ function App() {
     }
 
     try {
+      // 현재 뷰포트 중앙 계산 (PIXI 캔버스의 절대 좌표)
+      // 스크롤 위치는 PIXI 캔버스의 절대 좌표와 직접적으로 일치합니다.
+      const canvasWrapper = canvasWrapperRef.current;
+      let viewportX: number | undefined;
+      let viewportY: number | undefined;
+      
+      if (canvasWrapper) {
+        // 스크롤 위치 + 뷰포트 중앙 = PIXI 캔버스의 절대 좌표
+        viewportX = canvasWrapper.scrollLeft + canvasWrapper.clientWidth / 2;
+        viewportY = canvasWrapper.scrollTop + canvasWrapper.clientHeight / 2;
+      }
+
+      // 현재 가로 크기 가져오기
+      const currentWidth = webtoonWidth === "default" ? DEFAULT_CANVAS_WIDTH : webtoonWidth;
+
+      // 각 파일을 순차적으로 처리 (비동기 문제 해결)
       for (const file of validFiles) {
-        await drawingManager.addImageFromFile(file);
+        await drawingManager.addImageFromFile(file, viewportX, viewportY, currentWidth);
       }
       setHasImageObjects(true);
       setError(null);
@@ -312,6 +358,44 @@ function App() {
     } finally {
       event.target.value = "";
     }
+  };
+
+  // 가로 크기 변경 핸들러
+  const applyWebtoonWidth = React.useCallback((width: number | "default") => {
+    if (!drawingManager) return;
+    
+    const canvasManager = drawingManager.getCanvasManager();
+    if (!canvasManager) return;
+    
+    const targetWidth = width === "default" ? DEFAULT_CANVAS_WIDTH : width;
+    
+    if (hasBackgroundImage) {
+      const bgState = canvasManager.getBackgroundState();
+      if (bgState && bgState.originalSize) {
+        const aspectRatio = bgState.originalSize.height / bgState.originalSize.width;
+        const newHeight = targetWidth * aspectRatio;
+        canvasManager.resize(targetWidth, newHeight);
+        
+        // 배경 이미지를 원본 크기로 설정하고 상단 중앙 정렬
+        const originalWidth = bgState.originalSize.width;
+        const scale = targetWidth / originalWidth;
+        drawingManager.setBackgroundScale(scale);
+        
+        // 배경 이미지를 캔버스 상단 중앙에 배치
+        const scaledHeight = bgState.originalSize.height * scale;
+        canvasManager.setBackgroundPosition(targetWidth / 2, scaledHeight / 2);
+      }
+    } else {
+      // 배경 이미지가 없으면 기본 높이로 설정
+      canvasManager.resize(targetWidth, 600);
+    }
+  }, [drawingManager, hasBackgroundImage]);
+
+  // 웹툰 가로 크기 변경
+  const handleWebtoonWidthChange = (value: string) => {
+    const newWidth = value === "default" ? "default" : Number(value);
+    setWebtoonWidth(newWidth);
+    applyWebtoonWidth(newWidth);
   };
 
   const handleBackgroundScaleChange = (value: number) => {
@@ -357,7 +441,10 @@ function App() {
     );
     setIsTransformManual(drawingManager.isTransformModeEnabled());
     setIsTransformHotkey(false);
-  }, [drawingManager]);
+    
+    // 웹툰 모드 기본 크기 적용
+    applyWebtoonWidth(webtoonWidth);
+  }, [drawingManager, webtoonWidth, applyWebtoonWidth]);
 
   React.useEffect(() => {
     if (!hasTransformTarget) {
@@ -430,13 +517,28 @@ function App() {
 
             <div style={{ marginBottom: 16 }}>
               <strong>이미지 관리</strong>
-              <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+              <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button onClick={handleImageUploadClick}>
                   배경 이미지 불러오기
                 </button>
                 <button onClick={handleAdditionalImageClick}>
                   이미지 추가
                 </button>
+              </div>
+              <div style={{ marginTop: 12 }}>
+                <label>가로 크기: </label>
+                <select
+                  value={webtoonWidth === "default" ? "default" : webtoonWidth}
+                  onChange={(e) => handleWebtoonWidthChange(e.target.value)}
+                  style={{ marginLeft: 8, padding: "4px 8px" }}
+                >
+                  <option value="default">기본 ({DEFAULT_CANVAS_WIDTH}px)</option>
+                  {WEBTOON_WIDTH_OPTIONS.map((w) => (
+                    <option key={w} value={w}>
+                      {w}px
+                    </option>
+                  ))}
+                </select>
               </div>
               <input
                 ref={fileInputRef}
@@ -518,17 +620,30 @@ function App() {
           <div>
             <h3>실시간 협업 캔버스</h3>
             <div
-              ref={canvasContainerRef}
-              id="canvas-container"
+              ref={canvasWrapperRef}
               style={{
-                width: "800px",
-                height: "600px",
+                width: webtoonWidth === "default" ? `${DEFAULT_CANVAS_WIDTH}px` : `${webtoonWidth}px`,
+                height: "auto",
+                maxHeight: "calc(100vh - 200px)",
                 border: "2px solid #333",
-                backgroundColor: "#fff",
+                backgroundColor: "#000000",
                 cursor: "crosshair",
+                overflow: "auto",
+                margin: "0 auto",
+                position: "relative",
               }}
             >
-              {!drawingManager && <div>캔버스를 초기화하는 중...</div>}
+              <div
+                ref={canvasContainerRef}
+                id="canvas-container"
+                style={{
+                  width: "100%",
+                  height: "auto",
+                  minHeight: "100%",
+                }}
+              >
+                {!drawingManager && <div>캔버스를 초기화하는 중...</div>}
+              </div>
             </div>
           </div>
 
