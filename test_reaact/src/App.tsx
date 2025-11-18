@@ -2,6 +2,17 @@ import React from "react";
 import {
   LiveCollabCanvas,
   RealTimeDrawingManager,
+  DocumentViewer,
+  AnnotationService,
+  DocumentAdapterRegistry,
+  TxtAdapter,
+  DocxAdapter,
+  HwpAdapter,
+  MeAdapter,
+  DocumentModel,
+  type DocumentParser,
+  type DocumentRange,
+  type DocumentViewerAction,
 } from "../../live-collaboration-tool/client/src/lib";
 
 const WS_ENDPOINT = "ws://127.0.0.1:5001";
@@ -43,6 +54,455 @@ function Section({
   );
 }
 
+function DocumentViewerExample() {
+  const [documentModel, setDocumentModel] =
+    React.useState<DocumentModel | null>(null);
+  const [errorMessage, setErrorMessage] = React.useState<string | null>(null);
+  const [activeTool, setActiveTool] = React.useState<
+    "highlight" | "underline" | "note"
+  >("highlight");
+  const [rootElement, setRootElement] = React.useState<HTMLElement | null>(
+    null
+  );
+  const [selectedRange, setSelectedRange] = React.useState<{
+    blockId: string;
+    startOffset: number;
+    endOffset: number;
+  } | null>(null);
+  const [selectedText, setSelectedText] = React.useState("");
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  // AnnotationService 인스턴스 생성 (컴포넌트 생명주기 동안 유지)
+  const annotationServiceRef = React.useRef<AnnotationService | null>(null);
+  if (!annotationServiceRef.current) {
+    annotationServiceRef.current = new AnnotationService({
+      onError: (error) => console.warn("AnnotationService error", error),
+    });
+  }
+  const annotationService = annotationServiceRef.current;
+
+  // DocumentAdapterRegistry 생성 및 어댑터 등록
+  const adapterRegistryRef = React.useRef<DocumentAdapterRegistry | null>(null);
+  if (!adapterRegistryRef.current) {
+    const registry = new DocumentAdapterRegistry();
+    registry.register({ adapter: new TxtAdapter(), priority: 100 });
+    registry.register({ adapter: new DocxAdapter(), priority: 80 });
+    registry.register({ adapter: new MeAdapter(), priority: 75 });
+    // HWP 어댑터 활성화 (API 필요: http://localhost:5000)
+    registry.register({ adapter: new HwpAdapter(), priority: 60 });
+    adapterRegistryRef.current = registry;
+  }
+  const adapterRegistry = adapterRegistryRef.current;
+
+  const handleFileChange = React.useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      event.target.value = "";
+      if (!file) {
+        return;
+      }
+
+      const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+      const descriptor = {
+        extension,
+        mimeType: file.type || undefined,
+        metadata: { name: file.name },
+      };
+
+      const parser = adapterRegistry.findParser(descriptor) as
+        | DocumentParser
+        | undefined;
+      if (!parser) {
+        setErrorMessage(
+          `지원하지 않는 파일 형식입니다: .${extension} (현재 지원: .txt, .docx, .me, .md, .hwp)`
+        );
+        return;
+      }
+
+      try {
+        const buffer = await file.arrayBuffer();
+        const model = await parser.parse({
+          buffer,
+          descriptor,
+        });
+
+        // 문서 모델에 메타데이터 추가
+        const newModel: DocumentModel = {
+          ...model,
+          id: `doc-${Date.now()}`,
+          metadata: {
+            ...model.metadata,
+            title: file.name,
+            author: model.metadata?.author ?? "사용자",
+            createdAt: new Date(),
+            modifiedAt: new Date(),
+          },
+        };
+
+        setDocumentModel(newModel);
+        setErrorMessage(null);
+        // 어노테이션 초기화
+        annotationService.deserialize({
+          annotations: [],
+          notes: [],
+          version: 1,
+        });
+      } catch (error) {
+        console.error(error);
+        setErrorMessage(
+          error instanceof Error
+            ? error.message
+            : "파일 파싱 중 오류가 발생했습니다."
+        );
+      }
+    },
+    [adapterRegistry, annotationService]
+  );
+
+  const handlePickFile = React.useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  // 텍스트 선택 처리
+  React.useEffect(() => {
+    if (!rootElement || !documentModel) return;
+
+    const updateSelection = () => {
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+        setSelectedRange(null);
+        setSelectedText("");
+        return;
+      }
+
+      const range = selection.getRangeAt(0);
+      if (!rootElement.contains(range.commonAncestorContainer)) {
+        setSelectedRange(null);
+        setSelectedText("");
+        return;
+      }
+
+      // 블록 요소 찾기
+      const findBlockElement = (node: Node): HTMLElement | null => {
+        let current: Node | null = node;
+        while (current) {
+          if (current instanceof HTMLElement && current.dataset.blockId) {
+            return current;
+          }
+          current = current.parentNode;
+        }
+        return null;
+      };
+
+      const startBlock = findBlockElement(range.startContainer);
+      const endBlock = findBlockElement(range.endContainer);
+
+      if (!startBlock || !endBlock || startBlock !== endBlock) {
+        setSelectedRange(null);
+        setSelectedText("");
+        return;
+      }
+
+      const blockId = startBlock.dataset.blockId;
+      if (!blockId) {
+        setSelectedRange(null);
+        setSelectedText("");
+        return;
+      }
+
+      try {
+        // 블록의 텍스트 내용 가져오기
+        const blockContent =
+          startBlock.querySelector<HTMLElement>(
+            ".document-viewer__block-content"
+          ) || startBlock;
+        const blockText = blockContent.textContent || "";
+
+        // 간단한 오프셋 계산
+        const rangeForStart = document.createRange();
+        rangeForStart.selectNodeContents(blockContent);
+        rangeForStart.setEnd(range.startContainer, range.startOffset);
+        const startOffset = rangeForStart.toString().length;
+
+        const rangeForEnd = document.createRange();
+        rangeForEnd.selectNodeContents(blockContent);
+        rangeForEnd.setEnd(range.endContainer, range.endOffset);
+        const endOffset = rangeForEnd.toString().length;
+
+        if (startOffset === endOffset) {
+          setSelectedRange(null);
+          setSelectedText("");
+          return;
+        }
+
+        const text = blockText.slice(startOffset, endOffset);
+        setSelectedRange({
+          blockId,
+          startOffset: Math.max(0, Math.min(startOffset, blockText.length)),
+          endOffset: Math.max(
+            startOffset,
+            Math.min(endOffset, blockText.length)
+          ),
+        });
+        setSelectedText(text);
+      } catch (error) {
+        console.warn("선택 영역 계산 실패:", error);
+        setSelectedRange(null);
+        setSelectedText("");
+      }
+    };
+
+    document.addEventListener("selectionchange", updateSelection);
+    return () => {
+      document.removeEventListener("selectionchange", updateSelection);
+    };
+  }, [rootElement, documentModel]);
+
+  React.useEffect(() => {
+    setSelectedRange(null);
+    setSelectedText("");
+  }, [documentModel]);
+
+  const clearSelection = React.useCallback(() => {
+    setSelectedRange(null);
+    setSelectedText("");
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+  }, []);
+
+  const handleApplySelection = React.useCallback(() => {
+    if (!selectedRange) return;
+
+    const range: DocumentRange = {
+      blockId: selectedRange.blockId,
+      startOffset: selectedRange.startOffset,
+      endOffset: selectedRange.endOffset,
+    };
+
+    if (activeTool === "highlight") {
+      annotationService.createHighlight(range, {
+        style: { color: "rgba(250, 204, 21, 0.6)", label: "사용자 지정" },
+        author: { id: "user-1", name: "사용자" },
+      });
+    } else if (activeTool === "underline") {
+      annotationService.createUnderline(range, {
+        style: {
+          underlineColor: "#2563eb",
+          underlineThickness: 2,
+          underlineStyle: "solid",
+          label: "사용자 지정",
+        },
+        author: { id: "user-1", name: "사용자" },
+      });
+    } else {
+      // note
+      const annotation = annotationService.createHighlight(range, {
+        style: { color: "rgba(14, 165, 233, 0.25)", label: "메모" },
+        author: { id: "user-1", name: "사용자" },
+      });
+      const content = window
+        .prompt("메모 내용을 입력하세요", selectedText)
+        ?.trim();
+      if (content) {
+        annotationService.addNote(annotation.id, {
+          content,
+          author: { id: "user-1", name: "사용자" },
+        });
+      } else {
+        annotationService.removeAnnotation(annotation.id);
+      }
+    }
+
+    clearSelection();
+  }, [
+    activeTool,
+    annotationService,
+    selectedRange,
+    selectedText,
+    clearSelection,
+  ]);
+
+  // 키보드 단축키: Ctrl+1 (형광펜), Ctrl+2 (밑줄)
+  React.useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // 입력 필드에 포커스가 있을 때는 단축키 무시
+      const target = event.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      // Ctrl+1: 형광펜 도구로 전환 후 선택 적용
+      if ((event.ctrlKey || event.metaKey) && event.key === "1") {
+        event.preventDefault();
+        setActiveTool("highlight");
+        if (selectedRange && selectedText) {
+          setTimeout(() => handleApplySelection(), 0);
+        }
+        return;
+      }
+
+      // Ctrl+2: 밑줄 도구로 전환 후 선택 적용
+      if ((event.ctrlKey || event.metaKey) && event.key === "2") {
+        event.preventDefault();
+        setActiveTool("underline");
+        if (selectedRange && selectedText) {
+          setTimeout(() => handleApplySelection(), 0);
+        }
+        return;
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [selectedRange, selectedText, handleApplySelection]);
+
+  // DocumentViewer actions
+  const actions = React.useMemo<DocumentViewerAction[]>(() => {
+    return [
+      {
+        id: "highlight",
+        label: "형광펜",
+        active: activeTool === "highlight",
+        onClick: () => setActiveTool("highlight"),
+      },
+      {
+        id: "underline",
+        label: "밑줄",
+        active: activeTool === "underline",
+        onClick: () => setActiveTool("underline"),
+      },
+      {
+        id: "note",
+        label: "메모",
+        active: activeTool === "note",
+        onClick: () => setActiveTool("note"),
+      },
+    ];
+  }, [activeTool]);
+
+  if (!documentModel) {
+    return (
+      <div style={{ padding: 20, textAlign: "center" }}>
+        <p style={{ marginBottom: 16, color: "#666" }}>
+          문서 파일을 업로드하여 시작하세요.
+        </p>
+        <button
+          onClick={handlePickFile}
+          style={{
+            padding: "10px 20px",
+            fontSize: 16,
+            cursor: "pointer",
+            background: "#2F80ED",
+            color: "white",
+            border: "none",
+            borderRadius: 6,
+          }}
+        >
+          파일 선택 (.txt, .docx, .me, .md, .hwp)
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".txt,.docx,.me,.md,.hwp"
+          style={{ display: "none" }}
+          onChange={handleFileChange}
+        />
+        {errorMessage && (
+          <div
+            style={{
+              marginTop: 16,
+              padding: 12,
+              background: "#fee",
+              color: "#c33",
+              borderRadius: 4,
+            }}
+          >
+            {errorMessage}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div
+        style={{
+          marginBottom: 16,
+          display: "flex",
+          gap: 8,
+          alignItems: "center",
+        }}
+      >
+        <button
+          onClick={handlePickFile}
+          style={{
+            padding: "8px 16px",
+            cursor: "pointer",
+            background: "#2F80ED",
+            color: "white",
+            border: "none",
+            borderRadius: 4,
+          }}
+        >
+          다른 파일 불러오기
+        </button>
+        <span style={{ color: "#666", fontSize: 14 }}>
+          현재 문서: {documentModel.metadata?.title ?? "제목 없음"}
+        </span>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".txt,.docx,.me,.md,.hwp"
+          style={{ display: "none" }}
+          onChange={handleFileChange}
+        />
+      </div>
+      {errorMessage && (
+        <div
+          style={{
+            marginBottom: 16,
+            padding: 12,
+            background: "#fee",
+            color: "#c33",
+            borderRadius: 4,
+          }}
+        >
+          {errorMessage}
+        </div>
+      )}
+      <div
+        style={{
+          border: "1px solid #ddd",
+          borderRadius: 4,
+          overflow: "hidden",
+          background: "white",
+        }}
+      >
+        <DocumentViewer
+          document={documentModel}
+          annotationService={annotationService}
+          actions={actions}
+          style={{ height: 600 }}
+          searchEnabled={true}
+          onRootRef={setRootElement}
+        />
+      </div>
+      <div style={{ marginTop: 12, fontSize: 12, color: "#666" }}>
+        💡 텍스트를 드래그하여 선택한 후 Ctrl+1 (형광펜), Ctrl+2 (밑줄)로
+        어노테이션을 추가하거나 툴바 버튼을 사용할 수 있습니다.
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const basicUser = useTestUser("basic-user");
   const lightweightUser = useTestUser("lightweight-user");
@@ -56,7 +516,8 @@ export default function App() {
   const [customHasBackground, setCustomHasBackground] = React.useState(false);
   const [customHasOverlay, setCustomHasOverlay] = React.useState(false);
   const [customTransform, setCustomTransform] = React.useState(false);
-  const [customTransformHotkey, setCustomTransformHotkey] = React.useState(false);
+  const [customTransformHotkey, setCustomTransformHotkey] =
+    React.useState(false);
   const customFileInputRef = React.useRef<HTMLInputElement>(null);
   const customOverlayInputRef = React.useRef<HTMLInputElement>(null);
   const customHasTransformTarget = React.useMemo(
@@ -64,7 +525,8 @@ export default function App() {
     [customHasBackground, customHasOverlay]
   );
   const effectiveCustomTransform = React.useMemo(
-    () => (customTransform || customTransformHotkey) && customHasTransformTarget,
+    () =>
+      (customTransform || customTransformHotkey) && customHasTransformTarget,
     [customTransform, customTransformHotkey, customHasTransformTarget]
   );
 
@@ -251,10 +713,10 @@ export default function App() {
 
   return (
     <div style={{ padding: 24, maxWidth: 1200, margin: "0 auto" }}>
-      <h2>LiveCollab Canvas Examples</h2>
+      <h2>LiveCollab 라이브러리 사용 예제</h2>
       <p style={{ color: "#444" }}>
-        아래 예제들은 `LiveCollabCanvas` 컴포넌트를 다양한 방법으로 사용하는
-        모습을 보여줍니다.
+        아래 예제들은 `LiveCollabCanvas` 컴포넌트와 `DocumentViewer` 컴포넌트를
+        다양한 방법으로 사용하는 모습을 보여줍니다.
       </p>
 
       <Section
@@ -409,7 +871,11 @@ export default function App() {
             </button>
             <button
               onClick={() => customManager?.resetBackgroundImageTransform()}
-              disabled={!customManager || !customHasBackground || !effectiveCustomTransform}
+              disabled={
+                !customManager ||
+                !customHasBackground ||
+                !effectiveCustomTransform
+              }
             >
               이미지 초기화
             </button>
@@ -459,13 +925,18 @@ export default function App() {
               onChange={(e) =>
                 handleCustomScaleChange(parseFloat(e.target.value))
               }
-              disabled={!customManager || !customHasBackground || !effectiveCustomTransform}
+              disabled={
+                !customManager ||
+                !customHasBackground ||
+                !effectiveCustomTransform
+              }
               style={{ flex: 1 }}
             />
             <span>{customScale.toFixed(2)}x</span>
           </label>
           <div style={{ fontSize: 12, color: "#666" }}>
-            💡 Alt+T로 토글하거나 Ctrl을 누른 채 이미지를 클릭/드래그하면 Transform 모드가 활성화됩니다.
+            💡 Alt+T로 토글하거나 Ctrl을 누른 채 이미지를 클릭/드래그하면
+            Transform 모드가 활성화됩니다.
           </div>
         </div>
 
@@ -484,6 +955,13 @@ export default function App() {
             manager.setBrushColor(customColor);
           }}
         />
+      </Section>
+
+      <Section
+        title="5. 문서 뷰어 기본 사용"
+        description="`DocumentViewer` 컴포넌트와 `AnnotationService`를 사용하여 문서를 불러오고 하이라이트/메모 기능을 사용하는 예제입니다."
+      >
+        <DocumentViewerExample />
       </Section>
     </div>
   );
