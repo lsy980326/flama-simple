@@ -186,6 +186,7 @@
     ),
     #f8fafc;
   color: #111827;
+  font-family: -apple-system, BlinkMacSystemFont, "Malgun Gothic", "맑은 고딕", "Apple SD Gothic Neo", "Nanum Gothic", "나눔고딕", "Noto Sans KR", "Noto Sans CJK KR", sans-serif;
 }
 
 .document-viewer__block {
@@ -196,6 +197,7 @@
   display: flex;
   gap: 12px;
   position: relative;
+  font-family: inherit;
 }
 
 .document-viewer__line-number {

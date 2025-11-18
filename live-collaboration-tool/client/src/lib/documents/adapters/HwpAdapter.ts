@@ -105,11 +105,21 @@ interface HwpParseResult {
 const extractHwpFromServer = async (
   buffer: ArrayBuffer
 ): Promise<HwpParseResult | null> => {
-  const envUrl = (process.env.REACT_APP_API_URL as string | undefined)?.trim();
+  // 환경변수에서 API URL 가져오기
+  // 브라우저 환경에서는 process가 정의되지 않을 수 있으므로 안전하게 처리
+  let envUrl: string | undefined;
+  try {
+    if (typeof process !== "undefined" && process.env) {
+      envUrl = process.env.REACT_APP_API_URL;
+    }
+  } catch {
+    // process 접근 실패 시 무시 (브라우저 환경 등)
+  }
+  const envUrlTrimmed = envUrl?.trim();
   const sameOrigin =
     typeof window !== "undefined" ? window.location.origin : undefined;
   const candidates = [
-    envUrl, // 환경변수 우선
+    envUrlTrimmed, // 환경변수 우선
     sameOrigin ? `${sameOrigin}` : undefined, // 같은 오리진 (프록시 설정 시 /api로 라우팅)
     "http://localhost:5000",
     "http://127.0.0.1:5000",
