@@ -57,3 +57,9 @@ desktop.ini
 
 # misc
 .DS_Store
+
+# Workflow files
+.workflow/
+
+# Commit message files
+COMMIT_MESSAGE.txt
