@@ -1,5 +1,5 @@
 import * as PIXI from "pixi.js";
-import { DrawingData } from "../types";
+import { DrawingData, CanvasObject } from "../types";
 
 type TransformHandleKey = "topLeft" | "topRight" | "bottomLeft" | "bottomRight";
 
@@ -22,7 +22,7 @@ export class CanvasManager {
       }
     | null = null;
   private isBackgroundInteractionEnabled: boolean = false;
-  private transformLayer!: PIXI.Container;
+  private transformLayer: PIXI.Container | null = null;
   private transformOverlay: PIXI.Graphics | null = null;
   private transformHandles: Map<TransformHandleKey, PIXI.Graphics> = new Map();
   private isTransformMode: boolean = false;
@@ -30,13 +30,38 @@ export class CanvasManager {
   private activeHandle: TransformHandleKey | null = null;
   private handleDragData:
     | {
+        targetType: "background";
         handle: TransformHandleKey;
         pointerStartX: number;
         pointerStartY: number;
         spriteStartScale: number;
         startDiagonal: number;
       }
+    | {
+        targetType: "object";
+        handle: TransformHandleKey;
+        objectId: string;
+        container: PIXI.Container;
+        centerX: number;
+        centerY: number;
+        startDiagonal: number;
+        startScale: number;
+      }
     | null = null;
+  private canvasObjectMetadata: Map<
+    string,
+    {
+      type: "text" | "shape" | "image";
+      baseWidth?: number;
+      baseHeight?: number;
+      scale?: number;
+    }
+  > = new Map();
+  private transformObjectId: string | null = null;
+  private onObjectTransformed?: (
+    id: string,
+    updates: Partial<CanvasObject>
+  ) => void;
   private userIdToCursor: Map<string, PIXI.Graphics> = new Map();
   private isDrawing: boolean = false;
   private lastPoint: { x: number; y: number } | null = null;
@@ -142,41 +167,75 @@ export class CanvasManager {
   private handleTransformPointerMove = (
     event: PIXI.FederatedPointerEvent
   ): void => {
-    if (
-      !this.isTransformMode ||
-      !this.backgroundSprite ||
-      !this.handleDragData ||
-      !this.backgroundOriginalSize
-    ) {
+    if (!this.handleDragData) {
+      return;
+    }
+
+    const dragData = this.handleDragData;
+
+    if (dragData.targetType === "background") {
+      if (
+        !this.isTransformMode ||
+        !this.backgroundSprite ||
+        !this.backgroundOriginalSize
+      ) {
+        return;
+      }
+
+      event.stopPropagation();
+
+      const sprite = this.backgroundSprite;
+      const dx = event.global.x - sprite.x;
+      const dy = event.global.y - sprite.y;
+      const currentDiagonal = Math.max(Math.hypot(dx, dy), 0.001);
+
+      const scaleRatio = currentDiagonal / dragData.startDiagonal;
+      const newScale = Math.min(
+        Math.max(dragData.spriteStartScale * scaleRatio, 0.1),
+        5
+      );
+
+      sprite.scale.set(newScale);
+      this.backgroundScale = newScale;
+      this.updateTransformOverlay();
+      this.onBackgroundScaleChange?.(this.backgroundScale);
+      this.emitBackgroundTransformChange();
+      return;
+    }
+
+    if (!(this.isTransformMode || this.isTransformHotkey)) {
       return;
     }
 
     event.stopPropagation();
 
-    const sprite = this.backgroundSprite;
-    const dx = event.global.x - sprite.x;
-    const dy = event.global.y - sprite.y;
+    const dx = event.global.x - dragData.centerX;
+    const dy = event.global.y - dragData.centerY;
     const currentDiagonal = Math.max(Math.hypot(dx, dy), 0.001);
 
-    const scaleRatio = currentDiagonal / this.handleDragData.startDiagonal;
-    const newScale = Math.min(
-      Math.max(this.handleDragData.spriteStartScale * scaleRatio, 0.1),
-      5
-    );
+    const scaleRatio = currentDiagonal / dragData.startDiagonal;
+    const newScale = Math.max(dragData.startScale * scaleRatio, 0.05);
 
-    sprite.scale.set(newScale);
-    this.backgroundScale = newScale;
+    dragData.container.scale.set(newScale);
+    const meta = this.canvasObjectMetadata.get(dragData.objectId);
+    if (meta) {
+      meta.scale = newScale;
+    }
+    this.updateObjectSelectionBox();
     this.updateTransformOverlay();
-    this.onBackgroundScaleChange?.(this.backgroundScale);
-    this.emitBackgroundTransformChange();
   };
 
   private handleTransformPointerUp = (
     event: PIXI.FederatedPointerEvent
   ): void => {
-    if (!this.isTransformMode) return;
     event.stopPropagation();
+    const dragData = this.handleDragData;
     this.cancelHandleDrag();
+    if (dragData?.targetType === "object") {
+      this.onObjectTransformed?.(dragData.objectId, {
+        scale: dragData.container.scale.x,
+      });
+    }
     this.updateTransformOverlay();
   };
 
@@ -250,7 +309,7 @@ export class CanvasManager {
     this.graphics = new PIXI.Graphics();
     this.app.stage.addChild(this.graphics);
 
-    // 객체 레이어 (텍스트/도형)
+    // 객체 레이어 (텍스트/도형/이미지)
     this.objectsLayer = new PIXI.Container();
     this.app.stage.addChild(this.objectsLayer);
 
@@ -411,9 +470,6 @@ export class CanvasManager {
     if (!text || !this.app) return;
 
     try {
-      const fontSize = this.brushSize * 4;
-      const colorHex = "#" + this.brushColor.toString(16).padStart(6, "0");
-      
       this.onTextInput?.(x, y, text);
     } catch (error) {
       console.error("텍스트 입력 중 오류:", error);
@@ -519,6 +575,39 @@ export class CanvasManager {
 
   getTool(): "brush" | "eraser" | "text" | "rectangle" | "circle" | "line" {
     return this.currentTool;
+  }
+
+  getCanvasSize(): { width: number; height: number } {
+    if (this.app) {
+      return {
+        width: this.app.screen.width,
+        height: this.app.screen.height,
+      };
+    }
+    return { width: 0, height: 0 };
+  }
+
+  private async createTextureFromDataUrl(
+    dataUrl: string,
+    imageElement?: HTMLImageElement
+  ): Promise<PIXI.Texture> {
+    if (imageElement) {
+      return PIXI.Texture.from(imageElement);
+    }
+
+    return new Promise<PIXI.Texture>((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        try {
+          resolve(PIXI.Texture.from(img));
+        } catch (error) {
+          reject(error);
+        }
+      };
+      img.onerror = (error) => reject(error);
+      img.src = dataUrl;
+    });
   }
 
   // 캔버스 지우기
@@ -775,6 +864,12 @@ export class CanvasManager {
     this.onObjectMoved = callback;
   }
 
+  setOnObjectTransformed(
+    callback: (id: string, updates: Partial<CanvasObject>) => void
+  ): void {
+    this.onObjectTransformed = callback;
+  }
+
   addTextObject(id: string, x: number, y: number, text: string, fontSize: number, color: string): void {
     if (!this.objectsLayer) return;
 
@@ -796,6 +891,7 @@ export class CanvasManager {
       
       this.objectsLayer.addChild(container);
       this.canvasObjects.set(id, container);
+      this.canvasObjectMetadata.set(id, { type: "text" });
       
       this.attachObjectInteraction(container, id);
     } catch (error) {
@@ -846,10 +942,63 @@ export class CanvasManager {
       
       this.objectsLayer.addChild(container);
       this.canvasObjects.set(id, container);
+      this.canvasObjectMetadata.set(id, { type: "shape" });
       
       this.attachObjectInteraction(container, id);
     } catch (error) {
       console.error("도형 객체 추가 실패:", error);
+    }
+  }
+
+  async addImageObject(
+    id: string,
+    dataUrl: string,
+    x: number,
+    y: number,
+    width?: number,
+    height?: number,
+    scale: number = 1,
+    imageElement?: HTMLImageElement
+  ): Promise<void> {
+    if (!this.objectsLayer) return;
+
+    try {
+      const texture = await this.createTextureFromDataUrl(dataUrl, imageElement);
+
+      const container = new PIXI.Container();
+      const sprite = new PIXI.Sprite(texture);
+      sprite.anchor.set(0.5);
+      sprite.position.set(0, 0);
+
+      const targetWidth = width ?? texture.width;
+      const targetHeight = height ?? texture.height;
+
+      if (targetWidth) {
+        sprite.width = targetWidth;
+      }
+
+      if (targetHeight) {
+        sprite.height = targetHeight;
+      }
+
+      container.addChild(sprite);
+      container.position.set(x, y);
+      container.eventMode = "static";
+      container.cursor = "move";
+      container.scale.set(scale);
+
+      this.objectsLayer.addChild(container);
+      this.canvasObjects.set(id, container);
+      this.canvasObjectMetadata.set(id, {
+        type: "image",
+        baseWidth: targetWidth,
+        baseHeight: targetHeight,
+        scale,
+      });
+
+      this.attachObjectInteraction(container, id);
+    } catch (error) {
+      console.error("이미지 객체 추가 실패:", error);
     }
   }
 
@@ -879,6 +1028,7 @@ export class CanvasManager {
       const dy = global.y - dragData.startY;
       container.position.set(dragData.objX + dx, dragData.objY + dy);
       this.updateObjectSelectionBox();
+      this.updateTransformOverlay();
     });
 
     container.on("pointerup", (event: PIXI.FederatedPointerEvent) => {
@@ -896,7 +1046,14 @@ export class CanvasManager {
 
   private selectObject(id: string): void {
     this.selectedObjectId = id;
+    const meta = this.canvasObjectMetadata.get(id);
+    if (meta?.type === "image") {
+      this.transformObjectId = id;
+    } else {
+      this.transformObjectId = null;
+    }
     this.updateObjectSelectionBox();
+    this.updateTransformOverlay();
   }
 
   private updateObjectSelectionBox(): void {
@@ -930,7 +1087,9 @@ export class CanvasManager {
 
   clearObjectSelection(): void {
     this.selectedObjectId = null;
+    this.transformObjectId = null;
     this.updateObjectSelectionBox();
+    this.updateTransformOverlay();
   }
 
   removeObject(id: string): void {
@@ -939,8 +1098,13 @@ export class CanvasManager {
       this.objectsLayer.removeChild(obj);
       obj.destroy();
       this.canvasObjects.delete(id);
+      this.canvasObjectMetadata.delete(id);
       if (this.selectedObjectId === id) {
         this.clearObjectSelection();
+      }
+      if (this.transformObjectId === id) {
+        this.transformObjectId = null;
+        this.updateTransformOverlay();
       }
     }
   }
@@ -951,7 +1115,10 @@ export class CanvasManager {
       obj.destroy();
     });
     this.canvasObjects.clear();
+    this.canvasObjectMetadata.clear();
     this.clearObjectSelection();
+    this.transformObjectId = null;
+    this.updateTransformOverlay();
   }
 
   getObjectIds(): string[] {
@@ -964,7 +1131,22 @@ export class CanvasManager {
       obj.position.set(x, y);
       if (this.selectedObjectId === id) {
         this.updateObjectSelectionBox();
+        this.updateTransformOverlay();
       }
+    }
+  }
+
+  updateImageObjectScale(id: string, scale: number): void {
+    const container = this.canvasObjects.get(id);
+    if (!container) return;
+    container.scale.set(scale);
+    const meta = this.canvasObjectMetadata.get(id);
+    if (meta) {
+      meta.scale = scale;
+    }
+    if (this.selectedObjectId === id) {
+      this.updateObjectSelectionBox();
+      this.updateTransformOverlay();
     }
   }
 
@@ -1122,31 +1304,66 @@ export class CanvasManager {
     handle: TransformHandleKey,
     event: PIXI.FederatedPointerEvent
   ): void {
+    if (!this.app || !this.app.stage) {
+      return;
+    }
+
+    const target = this.getTransformTarget();
+    if (!target) {
+      return;
+    }
+
     if (
-      !this.isTransformMode ||
-      !this.app ||
-      !this.app.stage ||
-      !this.backgroundSprite ||
-      !this.backgroundOriginalSize
+      target.type === "background" &&
+      (!this.isTransformMode || !this.backgroundSprite || !this.backgroundOriginalSize)
+    ) {
+      return;
+    }
+
+    if (
+      target.type === "object" &&
+      !(this.isTransformMode || this.isTransformHotkey)
     ) {
       return;
     }
 
     event.stopPropagation();
 
-    const sprite = this.backgroundSprite;
-    const dx = event.global.x - sprite.x;
-    const dy = event.global.y - sprite.y;
-    const startDiagonal = Math.max(Math.hypot(dx, dy), 0.001);
-
     this.activeHandle = handle;
-    this.handleDragData = {
-      handle,
-      pointerStartX: event.global.x,
-      pointerStartY: event.global.y,
-      spriteStartScale: sprite.scale.x,
-      startDiagonal,
-    };
+
+    if (target.type === "background") {
+      const sprite = target.sprite;
+      const dx = event.global.x - sprite.x;
+      const dy = event.global.y - sprite.y;
+      const startDiagonal = Math.max(Math.hypot(dx, dy), 0.001);
+
+      this.handleDragData = {
+        targetType: "background",
+        handle,
+        pointerStartX: event.global.x,
+        pointerStartY: event.global.y,
+        spriteStartScale: sprite.scale.x,
+        startDiagonal,
+      };
+    } else {
+      const bounds = target.bounds;
+      const centerX = bounds.x + bounds.width / 2;
+      const centerY = bounds.y + bounds.height / 2;
+      const dx = event.global.x - centerX;
+      const dy = event.global.y - centerY;
+      const startDiagonal = Math.max(Math.hypot(dx, dy), 0.001);
+
+      this.handleDragData = {
+        targetType: "object",
+        handle,
+        objectId: target.objectId,
+        container: target.container,
+        centerX,
+        centerY,
+        startDiagonal,
+        startScale: target.container.scale.x,
+      };
+    }
 
     this.app.stage.on("pointermove", this.handleTransformPointerMove);
     this.app.stage.on("pointerup", this.handleTransformPointerUp);
@@ -1154,6 +1371,10 @@ export class CanvasManager {
   }
 
   private ensureTransformOverlay(): void {
+    if (!this.transformLayer) {
+      return;
+    }
+
     if (!this.transformOverlay) {
       this.transformOverlay = new PIXI.Graphics();
       this.transformLayer.addChild(this.transformOverlay);
@@ -1172,10 +1393,59 @@ export class CanvasManager {
         handle.cursor = this.getCursorForHandle(key);
         handle.eventMode = "static";
         handle.on("pointerdown", (event) => this.startHandleDrag(key, event));
-        this.transformLayer.addChild(handle);
+        this.transformLayer!.addChild(handle);
         this.transformHandles.set(key, handle);
       });
     }
+  }
+
+  private getTransformTarget():
+    | {
+        type: "background";
+        sprite: PIXI.Sprite;
+        bounds: PIXI.Rectangle;
+      }
+    | {
+        type: "object";
+        objectId: string;
+        container: PIXI.Container;
+        bounds: PIXI.Rectangle;
+      }
+    | null {
+    if (
+      (this.isTransformMode || this.isTransformHotkey) &&
+      this.transformObjectId
+    ) {
+      const container = this.canvasObjects.get(this.transformObjectId);
+      if (container) {
+      const rawBounds = container.getBounds(true);
+      const bounds = new PIXI.Rectangle(
+        rawBounds.minX ?? rawBounds.x ?? 0,
+        rawBounds.minY ?? rawBounds.y ?? 0,
+        rawBounds.width,
+        rawBounds.height
+      );
+        return {
+          type: "object",
+          objectId: this.transformObjectId,
+          container,
+          bounds,
+        };
+      }
+    }
+
+    if (this.isTransformMode && this.backgroundSprite) {
+      const sprite = this.backgroundSprite;
+      const bounds = new PIXI.Rectangle(
+        sprite.x - sprite.width / 2,
+        sprite.y - sprite.height / 2,
+        sprite.width,
+        sprite.height
+      );
+      return { type: "background", sprite, bounds };
+    }
+
+    return null;
   }
 
   private getCursorForHandle(handle: TransformHandleKey): string {
@@ -1192,17 +1462,27 @@ export class CanvasManager {
   }
 
   private updateTransformOverlay(): void {
-    if (
-      !this.isTransformMode ||
-      !this.transformLayer ||
-      !this.backgroundSprite
-    ) {
+    const layer = this.transformLayer;
+    if (!layer) {
       if (this.transformOverlay) {
         this.transformOverlay.visible = false;
         this.transformOverlay.clear();
       }
-      this.transformLayer.visible = false;
-      this.transformLayer.eventMode = "none";
+      this.transformHandles.forEach((handle) => {
+        handle.visible = false;
+        handle.eventMode = "none";
+      });
+      return;
+    }
+
+    const target = this.getTransformTarget();
+    if (!target) {
+      if (this.transformOverlay) {
+        this.transformOverlay.visible = false;
+        this.transformOverlay.clear();
+      }
+      layer.visible = false;
+      layer.eventMode = "none";
       this.transformHandles.forEach((handle) => {
         handle.visible = false;
         handle.eventMode = "none";
@@ -1212,14 +1492,14 @@ export class CanvasManager {
 
     this.ensureTransformOverlay();
 
-    this.transformLayer.visible = true;
-    this.transformLayer.eventMode = "static";
+    layer.visible = true;
+    layer.eventMode = "static";
 
-    const sprite = this.backgroundSprite;
-    const width = sprite.width;
-    const height = sprite.height;
-    const left = sprite.x - width / 2;
-    const top = sprite.y - height / 2;
+    const bounds = target.bounds;
+    const left = bounds.x;
+    const top = bounds.y;
+    const width = bounds.width;
+    const height = bounds.height;
 
     const overlay = this.transformOverlay!;
     overlay.clear();
@@ -1266,18 +1546,16 @@ export class CanvasManager {
 
     this.isTransformMode = enabled;
 
-    if (!this.backgroundSprite) {
-      this.transformLayer.visible = false;
-      this.transformLayer.eventMode = "none";
-      return;
-    }
-
-    if (enabled) {
-      this.attachBackgroundInteraction(this.backgroundSprite);
-    } else {
-      this.stopBackgroundDrag();
+    if (this.backgroundSprite) {
+      if (enabled) {
+        this.attachBackgroundInteraction(this.backgroundSprite);
+      } else {
+        this.stopBackgroundDrag();
+        this.cancelHandleDrag();
+        this.detachBackgroundInteraction(this.backgroundSprite);
+      }
+    } else if (!enabled) {
       this.cancelHandleDrag();
-      this.detachBackgroundInteraction(this.backgroundSprite);
     }
 
     this.updateTransformOverlay();
@@ -1289,6 +1567,10 @@ export class CanvasManager {
 
   setTransformHotkey(enabled: boolean): void {
     this.isTransformHotkey = enabled;
+    if (!enabled && !this.isTransformMode) {
+      this.cancelHandleDrag();
+    }
+    this.updateTransformOverlay();
   }
 
   private attachBackgroundInteraction(sprite: PIXI.Sprite): void {

@@ -53,13 +53,19 @@ export default function App() {
   const [customBrush, setCustomBrush] = React.useState(6);
   const [customColor, setCustomColor] = React.useState("#2F80ED");
   const [customScale, setCustomScale] = React.useState(1);
-  const [customHasImage, setCustomHasImage] = React.useState(false);
+  const [customHasBackground, setCustomHasBackground] = React.useState(false);
+  const [customHasOverlay, setCustomHasOverlay] = React.useState(false);
   const [customTransform, setCustomTransform] = React.useState(false);
   const [customTransformHotkey, setCustomTransformHotkey] = React.useState(false);
   const customFileInputRef = React.useRef<HTMLInputElement>(null);
+  const customOverlayInputRef = React.useRef<HTMLInputElement>(null);
+  const customHasTransformTarget = React.useMemo(
+    () => customHasBackground || customHasOverlay,
+    [customHasBackground, customHasOverlay]
+  );
   const effectiveCustomTransform = React.useMemo(
-    () => (customTransform || customTransformHotkey) && customHasImage,
-    [customTransform, customTransformHotkey, customHasImage]
+    () => (customTransform || customTransformHotkey) && customHasTransformTarget,
+    [customTransform, customTransformHotkey, customHasTransformTarget]
   );
 
   React.useEffect(() => {
@@ -67,15 +73,32 @@ export default function App() {
 
     customManager.setOnBackgroundScaleChange((scale) => {
       setCustomScale(Number(scale.toFixed(2)));
-      setCustomHasImage(customManager.hasBackgroundImage());
+      setCustomHasBackground(customManager.hasBackgroundImage());
     });
 
-    setCustomHasImage(customManager.hasBackgroundImage());
+    setCustomHasBackground(customManager.hasBackgroundImage());
     setCustomScale(Number(customManager.getBackgroundScale().toFixed(2)));
     setCustomTransform(customManager.isTransformModeEnabled());
 
     return () => {
       customManager.setOnBackgroundScaleChange(undefined);
+    };
+  }, [customManager]);
+
+  React.useEffect(() => {
+    if (!customManager) return;
+
+    const handleObjectsChange = (objects: any[]) => {
+      const hasImages = Array.isArray(objects)
+        ? objects.some((obj) => obj?.type === "image")
+        : false;
+      setCustomHasOverlay(hasImages);
+    };
+
+    customManager.setOnObjectsChange(handleObjectsChange);
+
+    return () => {
+      customManager.setOnObjectsChange(undefined);
     };
   }, [customManager]);
 
@@ -106,7 +129,7 @@ export default function App() {
         ) {
           return;
         }
-        if (!customHasImage) {
+        if (!customHasTransformTarget) {
           return;
         }
         event.preventDefault();
@@ -116,24 +139,22 @@ export default function App() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [customHasImage]);
+  }, [customHasTransformTarget]);
 
   React.useEffect(() => {
+    if (!customManager) return;
+
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Control") {
         setCustomTransformHotkey(true);
-        if (customManager && typeof (customManager as any).setTransformHotkey === "function") {
-          (customManager as any).setTransformHotkey(true);
-        }
+        customManager.setTransformHotkey(true);
       }
     };
 
     const handleKeyUp = (event: KeyboardEvent) => {
       if (event.key === "Control") {
         setCustomTransformHotkey(false);
-        if (customManager && typeof (customManager as any).setTransformHotkey === "function") {
-          (customManager as any).setTransformHotkey(false);
-        }
+        customManager.setTransformHotkey(false);
       }
     };
 
@@ -147,10 +168,10 @@ export default function App() {
   }, [customManager]);
 
   React.useEffect(() => {
-    if (!customHasImage) {
+    if (!customHasTransformTarget) {
       setCustomTransformHotkey(false);
     }
-  }, [customHasImage]);
+  }, [customHasTransformTarget]);
 
   const handleCustomScaleChange = (value: number) => {
     const rounded = Math.round(value * 100) / 100;
@@ -166,12 +187,60 @@ export default function App() {
 
     try {
       await customManager.loadBackgroundImage(file);
-      setCustomHasImage(true);
+      setCustomHasBackground(true);
+      setCustomScale(Number(customManager.getBackgroundScale().toFixed(2)));
     } catch (error) {
       console.error("이미지 업로드 실패:", error);
       alert("이미지를 불러오지 못했습니다.");
     } finally {
       event.target.value = "";
+    }
+  };
+
+  const handleCustomOverlayUpload = async (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const files = event.target.files;
+    if (!files || !customManager) {
+      event.target.value = "";
+      return;
+    }
+
+    const validFiles = Array.from(files).filter((file) =>
+      file.type.startsWith("image/")
+    );
+
+    if (validFiles.length === 0) {
+      alert("이미지 파일만 업로드할 수 있습니다.");
+      event.target.value = "";
+      return;
+    }
+
+    try {
+      for (const file of validFiles) {
+        await customManager.addImageFromFile(file);
+      }
+      setCustomHasOverlay(true);
+    } catch (error) {
+      console.error("오버레이 이미지 추가 실패:", error);
+      alert("오버레이 이미지를 추가하는 중 오류가 발생했습니다.");
+    } finally {
+      event.target.value = "";
+    }
+  };
+
+  const handleCustomRemoveBackground = () => {
+    if (!customManager) return;
+    try {
+      customManager.removeBackgroundImage();
+      setCustomHasBackground(false);
+      setCustomScale(1);
+      if (!customHasOverlay) {
+        setCustomTransform(false);
+        setCustomTransformHotkey(false);
+      }
+    } catch (error) {
+      console.error("배경 이미지 제거 실패:", error);
     }
   };
 
@@ -334,19 +403,19 @@ export default function App() {
             </button>
             <button
               onClick={toggleCustomTransform}
-              disabled={!customManager || !customHasImage}
+              disabled={!customManager || !customHasTransformTarget}
             >
               Transform {effectiveCustomTransform ? "끄기" : "켜기"}
             </button>
             <button
               onClick={() => customManager?.resetBackgroundImageTransform()}
-              disabled={!customManager || !customHasImage || !effectiveCustomTransform}
+              disabled={!customManager || !customHasBackground || !effectiveCustomTransform}
             >
               이미지 초기화
             </button>
             <button
-              onClick={() => customManager?.removeBackgroundImage()}
-              disabled={!customHasImage}
+              onClick={handleCustomRemoveBackground}
+              disabled={!customHasBackground}
             >
               이미지 제거
             </button>
@@ -363,6 +432,20 @@ export default function App() {
               style={{ display: "none" }}
               onChange={handleCustomImageUpload}
             />
+            <button
+              onClick={() => customOverlayInputRef.current?.click()}
+              disabled={!customManager}
+            >
+              오버레이 이미지 추가
+            </button>
+            <input
+              ref={customOverlayInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              style={{ display: "none" }}
+              onChange={handleCustomOverlayUpload}
+            />
           </div>
 
           <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -376,7 +459,7 @@ export default function App() {
               onChange={(e) =>
                 handleCustomScaleChange(parseFloat(e.target.value))
               }
-              disabled={!customManager || !customHasImage || !effectiveCustomTransform}
+              disabled={!customManager || !customHasBackground || !effectiveCustomTransform}
               style={{ flex: 1 }}
             />
             <span>{customScale.toFixed(2)}x</span>
@@ -395,7 +478,7 @@ export default function App() {
           showToolbar={false}
           onReady={({ manager }) => {
             setCustomManager(manager);
-            setCustomHasImage(manager.hasBackgroundImage());
+            setCustomHasBackground(manager.hasBackgroundImage());
             setCustomScale(Number(manager.getBackgroundScale().toFixed(2)));
             manager.setBrushSize(customBrush);
             manager.setBrushColor(customColor);
