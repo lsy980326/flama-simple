@@ -42,6 +42,26 @@ export interface DrawingData {
   brushSize?: number;
 }
 
+export interface CanvasObject {
+  id: string;
+  type: "text" | "shape" | "image";
+  tool?: "rectangle" | "circle" | "line";
+  x: number;
+  y: number;
+  x2?: number;
+  y2?: number;
+  text?: string;
+  fontSize?: number;
+  color?: string;
+  brushSize?: number;
+  dataUrl?: string;
+  width?: number;
+  height?: number;
+  scale?: number;
+  userId: string;
+  timestamp: number;
+}
+
 export interface ChatMessage {
   id: string;
   userId: string;

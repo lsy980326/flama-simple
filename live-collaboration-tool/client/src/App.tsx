@@ -9,14 +9,20 @@ function App() {
   const [activeUsers, setActiveUsers] = React.useState<User[]>([]);
   const [error, setError] = React.useState<string | null>(null);
   const [hasBackgroundImage, setHasBackgroundImage] = React.useState(false);
+  const [hasImageObjects, setHasImageObjects] = React.useState(false);
   const [backgroundScale, setBackgroundScale] = React.useState(1);
   const [isTransformManual, setIsTransformManual] = React.useState(false);
   const [isTransformHotkey, setIsTransformHotkey] = React.useState(false);
   const canvasContainerRef = React.useRef<HTMLDivElement>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const additionalImageInputRef = React.useRef<HTMLInputElement>(null);
+  const hasTransformTarget = React.useMemo(
+    () => hasBackgroundImage || hasImageObjects,
+    [hasBackgroundImage, hasImageObjects]
+  );
   const effectiveTransformMode = React.useMemo(
-    () => (isTransformManual || isTransformHotkey) && hasBackgroundImage,
-    [isTransformManual, isTransformHotkey, hasBackgroundImage]
+    () => (isTransformManual || isTransformHotkey) && hasTransformTarget,
+    [isTransformManual, isTransformHotkey, hasTransformTarget]
   );
 
   React.useEffect(() => {
@@ -161,6 +167,23 @@ function App() {
   }, [drawingManager, effectiveTransformMode]);
 
   React.useEffect(() => {
+    if (!drawingManager) return;
+
+    const handleObjectsChange = (objects: any[]) => {
+      const hasImages = Array.isArray(objects)
+        ? objects.some((obj) => obj?.type === "image")
+        : false;
+      setHasImageObjects(hasImages);
+    };
+
+    drawingManager.setOnObjectsChange(handleObjectsChange);
+
+    return () => {
+      drawingManager.setOnObjectsChange(undefined);
+    };
+  }, [drawingManager]);
+
+  React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if ((event.key === "t" || event.key === "T") && event.altKey) {
         const target = event.target as HTMLElement | null;
@@ -172,7 +195,7 @@ function App() {
         ) {
           return;
         }
-        if (!hasBackgroundImage) {
+        if (!hasTransformTarget) {
           return;
         }
         event.preventDefault();
@@ -182,7 +205,7 @@ function App() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [hasBackgroundImage]);
+  }, [hasTransformTarget]);
 
   React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -251,8 +274,49 @@ function App() {
     }
   };
 
+  const handleAdditionalImageClick = () => {
+    additionalImageInputRef.current?.click();
+  };
+
+  const handleAdditionalImageChange = async (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const files = event.target.files;
+    if (!files || !drawingManager) {
+      return;
+    }
+
+    const validFiles = Array.from(files).filter((file) =>
+      file.type.startsWith("image/")
+    );
+
+    if (validFiles.length === 0) {
+      alert("이미지 파일만 업로드할 수 있습니다.");
+      event.target.value = "";
+      return;
+    }
+
+    try {
+      for (const file of validFiles) {
+        await drawingManager.addImageFromFile(file);
+      }
+      setHasImageObjects(true);
+      setError(null);
+    } catch (uploadError) {
+      console.error("이미지 추가 실패:", uploadError);
+      setError(
+        uploadError instanceof Error
+          ? uploadError.message
+          : "이미지를 추가하는 중 오류가 발생했습니다"
+      );
+    } finally {
+      event.target.value = "";
+    }
+  };
+
   const handleBackgroundScaleChange = (value: number) => {
-    if (!drawingManager || !effectiveTransformMode) return;
+    if (!drawingManager || !effectiveTransformMode || !hasBackgroundImage)
+      return;
 
     drawingManager.setBackgroundScale(value);
     const appliedScale = drawingManager.getBackgroundScale();
@@ -260,7 +324,8 @@ function App() {
   };
 
   const handleResetBackgroundTransform = () => {
-    if (!drawingManager || !effectiveTransformMode) return;
+    if (!drawingManager || !effectiveTransformMode || !hasBackgroundImage)
+      return;
 
     drawingManager.resetBackgroundImageTransform();
     setBackgroundScale(Number(drawingManager.getBackgroundScale().toFixed(2)));
@@ -279,6 +344,7 @@ function App() {
   React.useEffect(() => {
     if (!drawingManager) {
       setHasBackgroundImage(false);
+      setHasImageObjects(false);
       setBackgroundScale(1);
       setIsTransformManual(false);
       setIsTransformHotkey(false);
@@ -294,10 +360,11 @@ function App() {
   }, [drawingManager]);
 
   React.useEffect(() => {
-    if (!hasBackgroundImage) {
+    if (!hasTransformTarget) {
       setIsTransformHotkey(false);
+      setIsTransformManual(false);
     }
-  }, [hasBackgroundImage]);
+  }, [hasTransformTarget]);
 
   return (
     <div className="App">
@@ -361,48 +428,59 @@ function App() {
               </button>
             </div>
 
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              style={{ display: "none" }}
-              onChange={handleImageFileChange}
-            />
-
-            <button onClick={handleImageUploadClick}>이미지 불러오기</button>
-
-            <div
-              style={{ display: "flex", flexDirection: "column", gap: "6px" }}
-            >
-              <label>
-                이미지 배율: {backgroundScale.toFixed(2)}x
+            <div style={{ marginBottom: 16 }}>
+              <strong>이미지 관리</strong>
+              <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+                <button onClick={handleImageUploadClick}>
+                  배경 이미지 불러오기
+                </button>
+                <button onClick={handleAdditionalImageClick}>
+                  이미지 추가
+                </button>
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                style={{ display: "none" }}
+                onChange={handleImageFileChange}
+              />
+              <input
+                ref={additionalImageInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                style={{ display: "none" }}
+                onChange={handleAdditionalImageChange}
+              />
+              <div style={{ marginTop: 12 }}>
+                <label>배경 확대/축소: {backgroundScale.toFixed(2)}x</label>
                 <input
                   type="range"
-                  min="0.1"
-                  max="5"
-                  step="0.05"
+                  min={0.1}
+                  max={3}
+                  step={0.01}
                   value={backgroundScale}
                   onChange={(e) =>
                     handleBackgroundScaleChange(parseFloat(e.target.value))
                   }
-                  disabled={!hasBackgroundImage || !effectiveTransformMode}
+                  disabled={!hasBackgroundImage}
                 />
-              </label>
-            </div>
-
-            <div style={{ display: "flex", gap: "8px" }}>
-              <button
-                onClick={handleResetBackgroundTransform}
-                disabled={!hasBackgroundImage || !effectiveTransformMode}
-              >
-                이미지 초기화
-              </button>
-              <button
-                onClick={handleRemoveBackgroundImage}
-                disabled={!hasBackgroundImage}
-              >
-                이미지 제거
-              </button>
+              </div>
+              <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+                <button
+                  onClick={handleResetBackgroundTransform}
+                  disabled={!hasBackgroundImage || !effectiveTransformMode}
+                >
+                  배경 초기화
+                </button>
+                <button
+                  onClick={handleRemoveBackgroundImage}
+                  disabled={!hasBackgroundImage}
+                >
+                  배경 제거
+                </button>
+              </div>
             </div>
 
             <hr style={{ width: "100%" }} />

@@ -31,23 +31,30 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
   onError,
 }) => {
   const containerRef = React.useRef<HTMLDivElement>(null);
-  const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const backgroundFileInputRef = React.useRef<HTMLInputElement>(null);
+  const overlayFileInputRef = React.useRef<HTMLInputElement>(null);
+  const loadFileInputRef = React.useRef<HTMLInputElement>(null);
   const [manager, setManager] = React.useState<RealTimeDrawingManager | null>(
     null
   );
   const [brushSize, setBrushSize] = React.useState(5);
   const [color, setColor] = React.useState("#000000");
-  const [hasImage, setHasImage] = React.useState(false);
+  const [hasBackground, setHasBackground] = React.useState(false);
+  const [hasOverlay, setHasOverlay] = React.useState(false);
+  const [backgroundScale, setBackgroundScale] = React.useState(1);
   const [currentTool, setCurrentTool] = React.useState<
     "brush" | "eraser" | "text" | "rectangle" | "circle" | "line"
   >("brush");
   const [isTransformManual, setIsTransformManual] = React.useState(false);
   const [isTransformHotkey, setIsTransformHotkey] = React.useState(false);
-  const effectiveTransformMode = React.useMemo(
-    () => (isTransformManual || isTransformHotkey) && hasImage,
-    [isTransformManual, isTransformHotkey, hasImage]
+  const hasTransformTarget = React.useMemo(
+    () => hasBackground || hasOverlay,
+    [hasBackground, hasOverlay]
   );
-  const loadFileInputRef = React.useRef<HTMLInputElement>(null);
+  const effectiveTransformMode = React.useMemo(
+    () => (isTransformManual || isTransformHotkey) && hasTransformTarget,
+    [isTransformManual, isTransformHotkey, hasTransformTarget]
+  );
   // 최신 콜백/설정 참조
   const readyRef = React.useRef(onReady);
   const errorRef = React.useRef(onError);
@@ -104,7 +111,7 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
         localManager?.disconnect();
       } catch {}
     };
-  }, [serverUrl, roomId, user.id]);
+  }, [serverUrl, roomId, user]);
 
   // 2) 브러시 설정 동기화
   React.useEffect(() => {
@@ -119,6 +126,45 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
     manager.setTransformMode(effectiveTransformMode);
   }, [manager, effectiveTransformMode]);
 
+  React.useEffect(() => {
+    if (!manager) return;
+
+    const handleScaleChange = (scale: number) => {
+      setBackgroundScale(Number(scale.toFixed(2)));
+      setHasBackground(manager.hasBackgroundImage());
+    };
+
+    manager.setOnBackgroundScaleChange(handleScaleChange);
+    setHasBackground(manager.hasBackgroundImage());
+    if (manager.hasBackgroundImage()) {
+      setBackgroundScale(Number(manager.getBackgroundScale().toFixed(2)));
+    } else {
+      setBackgroundScale(1);
+    }
+
+    return () => {
+      manager.setOnBackgroundScaleChange(undefined);
+    };
+  }, [manager]);
+
+  React.useEffect(() => {
+    if (!manager) return;
+
+    const handleObjectsChange = (objects: any[]) => {
+      const hasImages = Array.isArray(objects)
+        ? objects.some((obj) => obj?.type === "image")
+        : false;
+      setHasOverlay(hasImages);
+      setHasBackground(manager.hasBackgroundImage());
+    };
+
+    manager.setOnObjectsChange(handleObjectsChange);
+
+    return () => {
+      manager.setOnObjectsChange(undefined);
+    };
+  }, [manager]);
+
   // 4) Alt+T 단축키 핸들러
   React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -132,7 +178,7 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
         ) {
           return;
         }
-        if (!hasImage) {
+        if (!hasTransformTarget) {
           return;
         }
         event.preventDefault();
@@ -142,31 +188,23 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [hasImage]);
+  }, [hasTransformTarget]);
 
   // 5) Ctrl 키 누른 채 유지로 임시 Transform 활성화
   React.useEffect(() => {
+    if (!manager) return;
+
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Control") {
         setIsTransformHotkey(true);
-        if (
-          manager &&
-          typeof (manager as any).setTransformHotkey === "function"
-        ) {
-          (manager as any).setTransformHotkey(true);
-        }
+        manager.setTransformHotkey(true);
       }
     };
 
     const handleKeyUp = (event: KeyboardEvent) => {
       if (event.key === "Control") {
         setIsTransformHotkey(false);
-        if (
-          manager &&
-          typeof (manager as any).setTransformHotkey === "function"
-        ) {
-          (manager as any).setTransformHotkey(false);
-        }
+        manager.setTransformHotkey(false);
       }
     };
 
@@ -180,10 +218,10 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
   }, [manager]);
 
   React.useEffect(() => {
-    if (!hasImage) {
+    if (!hasTransformTarget) {
       setIsTransformHotkey(false);
     }
-  }, [hasImage]);
+  }, [hasTransformTarget]);
 
   const handleSize = (v: number) => {
     setBrushSize(v);
@@ -198,64 +236,95 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
     tool: "brush" | "eraser" | "text" | "rectangle" | "circle" | "line"
   ) => {
     setCurrentTool(tool);
-    if (manager && typeof (manager as any).setTool === "function") {
-      (manager as any).setTool(tool);
+    if (manager) {
+      manager.setTool(tool);
     }
   };
 
-  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleBackgroundUpload = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
     const file = e.target.files?.[0];
-    if (!file || !manager) return;
+    if (!file || !manager) {
+      e.target.value = "";
+      return;
+    }
 
-    // 이미지 파일만 허용
     if (!file.type.startsWith("image/")) {
       alert("이미지 파일만 업로드할 수 있습니다.");
+      e.target.value = "";
       return;
     }
 
     try {
-      // CanvasManager의 loadImageFromFile 메서드 호출
-      if (typeof (manager as any).loadBackgroundImage === "function") {
-        await (manager as any).loadBackgroundImage(file);
-        setHasImage(true);
-      } else {
-        const canvasManager = manager.getCanvasManager();
-        if (
-          canvasManager &&
-          typeof canvasManager.loadImageFromFile === "function"
-        ) {
-          await canvasManager.loadImageFromFile(file);
-          setHasImage(true);
-        } else {
-          console.error("CanvasManager를 찾을 수 없습니다.");
-        }
-      }
+      await manager.loadBackgroundImage(file);
+      setHasBackground(true);
+      const applied = manager.getBackgroundScale();
+      setBackgroundScale(Number(applied.toFixed(2)));
     } catch (error) {
-      console.error("이미지 로드 실패:", error);
-      alert("이미지 로드에 실패했습니다.");
+      console.error("배경 이미지 로딩 실패:", error);
+      alert("배경 이미지를 불러오는 중 오류가 발생했습니다.");
+    } finally {
+      e.target.value = "";
     }
+  };
+
+  const handleOverlayUpload = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const files = e.target.files;
+    if (!files || !manager) {
+      e.target.value = "";
+      return;
+    }
+
+    const validFiles = Array.from(files).filter((file) =>
+      file.type.startsWith("image/")
+    );
+
+    if (validFiles.length === 0) {
+      alert("이미지 파일만 업로드할 수 있습니다.");
+      e.target.value = "";
+      return;
+    }
+
+    try {
+      for (const file of validFiles) {
+        await manager.addImageFromFile(file);
+      }
+      setHasOverlay(true);
+    } catch (error) {
+      console.error("오버레이 이미지 추가 실패:", error);
+      alert("오버레이 이미지를 추가하는 중 오류가 발생했습니다.");
+    } finally {
+      e.target.value = "";
+    }
+  };
+
+  const handleBackgroundScaleChange = (value: number) => {
+    if (!manager || !effectiveTransformMode || !hasBackground) return;
+    manager.setBackgroundScale(value);
+    const applied = manager.getBackgroundScale();
+    setBackgroundScale(Number(applied.toFixed(2)));
+  };
+
+  const handleResetBackgroundTransform = () => {
+    if (!manager || !effectiveTransformMode || !hasBackground) return;
+    manager.resetBackgroundImageTransform();
+    const applied = manager.getBackgroundScale();
+    setBackgroundScale(Number(applied.toFixed(2)));
   };
 
   const handleRemoveImage = () => {
     if (!manager) return;
 
     try {
-      if (typeof (manager as any).removeBackgroundImage === "function") {
-        (manager as any).removeBackgroundImage();
-        setHasImage(false);
+      manager.removeBackgroundImage();
+      setHasBackground(false);
+      setBackgroundScale(1);
+      if (!hasOverlay) {
         setIsTransformManual(false);
         setIsTransformHotkey(false);
-      } else {
-        const canvasManager = manager.getCanvasManager();
-        if (
-          canvasManager &&
-          typeof canvasManager.removeBackgroundImage === "function"
-        ) {
-          canvasManager.removeBackgroundImage();
-          setHasImage(false);
-          setIsTransformManual(false);
-          setIsTransformHotkey(false);
-        }
       }
     } catch (error) {
       console.error("이미지 제거 실패:", error);
@@ -265,10 +334,8 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
   const handleSaveCanvas = () => {
     if (!manager) return;
     try {
-      if (typeof (manager as any).downloadCanvasState === "function") {
-        const filename = `canvas-${Date.now()}.json`;
-        (manager as any).downloadCanvasState(filename);
-      }
+      const filename = `canvas-${Date.now()}.json`;
+      manager.downloadCanvasState(filename);
     } catch (error) {
       console.error("캔버스 저장 실패:", error);
       alert("캔버스 저장에 실패했습니다.");
@@ -281,14 +348,22 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
 
     try {
       const text = await file.text();
-      if (typeof (manager as any).importCanvasState === "function") {
-        await (manager as any).importCanvasState(text);
-        setHasImage(
-          typeof (manager as any).hasBackgroundImage === "function"
-            ? (manager as any).hasBackgroundImage()
-            : false
-        );
+      await manager.importCanvasState(text);
+      let parsed: any = null;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = null;
       }
+      const hasBg = manager.hasBackgroundImage();
+      const hasOverlayObjects = Array.isArray(parsed?.objects)
+        ? parsed.objects.some((obj: any) => obj?.type === "image")
+        : false;
+      setHasBackground(hasBg);
+      setHasOverlay(hasOverlayObjects);
+      setBackgroundScale(
+        hasBg ? Number(manager.getBackgroundScale().toFixed(2)) : 1
+      );
     } catch (error) {
       console.error("캔버스 불러오기 실패:", error);
       alert("캔버스 불러오기에 실패했습니다.");
@@ -411,19 +486,37 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
           <button onClick={() => manager?.clearCanvas()}>캔버스 지우기</button>
           <div style={{ borderTop: "1px solid #ccc", paddingTop: 12 }}>
             <input
-              ref={fileInputRef}
+              ref={backgroundFileInputRef}
               type="file"
               accept="image/*"
               style={{ display: "none" }}
-              onChange={handleImageUpload}
+              onChange={handleBackgroundUpload}
             />
-            <button onClick={() => fileInputRef.current?.click()}>
-              이미지 불러오기
+            <button onClick={() => backgroundFileInputRef.current?.click()}>
+              배경 이미지 불러오기
             </button>
-            {hasImage && (
+            {hasBackground && (
               <button onClick={handleRemoveImage} style={{ marginTop: 8 }}>
-                이미지 제거
+                배경 이미지 제거
               </button>
+            )}
+          </div>
+          <div style={{ borderTop: "1px solid #ccc", paddingTop: 12 }}>
+            <input
+              ref={overlayFileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              style={{ display: "none" }}
+              onChange={handleOverlayUpload}
+            />
+            <button onClick={() => overlayFileInputRef.current?.click()}>
+              오버레이 이미지 추가
+            </button>
+            {hasOverlay && (
+              <div style={{ marginTop: 8, fontSize: 11, color: "#444" }}>
+                Ctrl 키를 누른 채 이미지를 드래그하면 이동할 수 있습니다.
+              </div>
             )}
           </div>
           <div style={{ borderTop: "1px solid #ccc", paddingTop: 12 }}>
@@ -446,6 +539,52 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
               style={{ marginTop: 8 }}
             >
               불러오기
+            </button>
+          </div>
+          <div
+            style={{ display: "flex", flexDirection: "column", gap: "4px" }}
+          >
+            <span>
+              Transform 모드: {effectiveTransformMode ? "ON" : "OFF"} (Alt+T
+              토글 / Ctrl 누른 채 유지)
+            </span>
+            <button
+              onClick={() => setIsTransformManual((prev) => !prev)}
+              disabled={!hasTransformTarget}
+            >
+              {effectiveTransformMode
+                ? "Transform 모드 종료"
+                : "Transform 모드 진입"}
+            </button>
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <label>
+              배경 확대/축소: {backgroundScale.toFixed(2)}x
+            </label>
+            <input
+              type="range"
+              min={0.1}
+              max={3}
+              step={0.01}
+              value={backgroundScale}
+              onChange={(e) =>
+                handleBackgroundScaleChange(parseFloat(e.target.value))
+              }
+              disabled={!hasBackground}
+            />
+          </div>
+          <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+            <button
+              onClick={handleResetBackgroundTransform}
+              disabled={!hasBackground || !effectiveTransformMode}
+            >
+              배경 초기화
+            </button>
+            <button
+              onClick={handleRemoveImage}
+              disabled={!hasBackground}
+            >
+              배경 제거
             </button>
           </div>
         </div>

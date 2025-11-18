@@ -32,7 +32,7 @@ export class RealTimeDrawingManager {
   private backgroundScaleListener?: (scale: number) => void;
   private pendingBackgroundState: BackgroundState | null = null;
   private backgroundUpdateTimer: ReturnType<typeof setTimeout> | null = null;
-  private localObjectIds: Set<string> = new Set();
+  private onObjectsChange?: (objects: CanvasObject[]) => void;
 
   // 콜백 함수들
   private onDrawingUpdate?: (operations: DrawingOperation[]) => void;
@@ -124,7 +124,6 @@ export class RealTimeDrawingManager {
         fontSize,
         color,
       });
-      this.localObjectIds.add(id);
       this.canvasManager.addTextObject(id, x, y, text, fontSize, color);
     });
 
@@ -141,7 +140,6 @@ export class RealTimeDrawingManager {
         brushSize,
         color,
       });
-      this.localObjectIds.add(id);
       this.canvasManager.addShapeObject(
         id,
         shape.tool as "rectangle" | "circle" | "line",
@@ -156,6 +154,12 @@ export class RealTimeDrawingManager {
 
     this.canvasManager.setOnObjectMoved((id, x, y) => {
       this.yjsManager.updateObject(id, { x, y });
+      this.onObjectsChange?.(this.yjsManager.getAllObjects());
+    });
+
+    this.canvasManager.setOnObjectTransformed((id, updates) => {
+      this.yjsManager.updateObject(id, updates);
+      this.onObjectsChange?.(this.yjsManager.getAllObjects());
     });
 
       this.isInitialized = true;
@@ -218,7 +222,7 @@ export class RealTimeDrawingManager {
     });
 
     this.yjsManager.setOnObjectsUpdate((objects) => {
-      this.syncCanvasObjects(objects);
+      void this.syncCanvasObjects(objects);
     });
   }
 
@@ -320,7 +324,7 @@ export class RealTimeDrawingManager {
     }
   }
 
-  private syncCanvasObjects(objects: CanvasObject[]): void {
+  private async syncCanvasObjects(objects: CanvasObject[]): Promise<void> {
     if (!this.canvasManager.isReady()) {
       return;
     }
@@ -332,17 +336,19 @@ export class RealTimeDrawingManager {
     existingIds.forEach((id) => {
       if (!newObjectIds.has(id)) {
         this.canvasManager.removeObject(id);
-        this.localObjectIds.delete(id);
       }
     });
 
     // 새로 추가되거나 업데이트된 객체만 처리
-    objects.forEach((obj) => {
+    for (const obj of objects) {
       const exists = existingIds.includes(obj.id);
       
       if (exists) {
         // 이미 있는 객체는 위치만 업데이트
         this.canvasManager.updateObjectPosition(obj.id, obj.x, obj.y);
+        if (obj.type === "image" && typeof obj.scale === "number") {
+          this.canvasManager.updateImageObjectScale(obj.id, obj.scale);
+        }
       } else {
         // 원격 사용자가 추가한 새 객체만 렌더링
         if (obj.type === "text" && obj.text) {
@@ -352,7 +358,7 @@ export class RealTimeDrawingManager {
             obj.y,
             obj.text,
             obj.fontSize || 20,
-            obj.color
+            obj.color ?? "#000000"
           );
         } else if (obj.type === "shape" && obj.tool && obj.x2 !== undefined && obj.y2 !== undefined) {
           this.canvasManager.addShapeObject(
@@ -363,11 +369,23 @@ export class RealTimeDrawingManager {
             obj.x2,
             obj.y2,
             obj.brushSize || 2,
-            obj.color
+            obj.color || "#000000"
+          );
+        } else if (obj.type === "image" && obj.dataUrl) {
+          await this.canvasManager.addImageObject(
+            obj.id,
+            obj.dataUrl,
+            obj.x,
+            obj.y,
+            obj.width,
+            obj.height,
+            obj.scale ?? 1
           );
         }
       }
-    });
+    }
+
+    this.onObjectsChange?.(objects);
   }
 
   private async applySharedBackgroundState(
@@ -550,8 +568,7 @@ export class RealTimeDrawingManager {
     this.yjsManager.getAllObjects().forEach((obj) => {
       this.yjsManager.removeObject(obj.id);
     });
-    
-    this.localObjectIds.clear();
+    this.onObjectsChange?.(this.yjsManager.getAllObjects());
 
     // WebRTC로도 전송
     this.webrtcManager.broadcastMessage("drawing", {
@@ -584,6 +601,46 @@ export class RealTimeDrawingManager {
   async loadBackgroundImage(file: File): Promise<void> {
     await this.canvasManager.loadImageFromFile(file);
     this.queueBackgroundStateSync(true);
+  }
+
+  async addImageFromFile(file: File): Promise<void> {
+    if (!this.canvasManager.isReady()) {
+      try {
+        await this.canvasManager.waitForInitialization();
+      } catch (error) {
+        console.error("캔버스 초기화 전에 이미지 추가 실패:", error);
+        throw error;
+      }
+    }
+
+    const dataUrl = await this.readFileAsDataUrl(file);
+    const { width, height, image } = await this.getImageInfo(dataUrl);
+    const { width: canvasWidth, height: canvasHeight } =
+      this.canvasManager.getCanvasSize();
+    const centerX = canvasWidth / 2;
+    const centerY = canvasHeight / 2;
+
+    const id = this.yjsManager.addObject({
+      type: "image",
+      x: centerX,
+      y: centerY,
+      dataUrl,
+      width,
+      height,
+      scale: 1,
+    });
+
+    await this.canvasManager.addImageObject(
+      id,
+      dataUrl,
+      centerX,
+      centerY,
+      width,
+      height,
+      1,
+      image
+    );
+    this.onObjectsChange?.(this.yjsManager.getAllObjects());
   }
 
   setBackgroundScale(scale: number): void {
@@ -635,6 +692,14 @@ export class RealTimeDrawingManager {
     this.canvasManager.setTransformHotkey(enabled);
   }
 
+  setOnObjectsChange(callback?: (objects: CanvasObject[]) => void): void {
+    this.onObjectsChange = callback;
+
+    if (callback) {
+      callback(this.yjsManager.getAllObjects());
+    }
+  }
+
   // 캔버스 상태 저장/불러오기
   exportCanvasState(): string {
     return this.yjsManager.exportState();
@@ -653,6 +718,16 @@ export class RealTimeDrawingManager {
       if (bgState) {
         await this.applySharedBackgroundState(bgState);
       }
+      if (!this.canvasManager.isReady()) {
+        try {
+          await this.canvasManager.waitForInitialization();
+        } catch (error) {
+          console.error("캔버스 초기화 대기 중 오류:", error);
+        }
+      }
+      const objects = this.yjsManager.getAllObjects();
+      await this.syncCanvasObjects(objects);
+      this.onObjectsChange?.(objects);
     } catch (error) {
       console.error("캔버스 상태 복원 실패:", error);
       throw error;
@@ -684,6 +759,28 @@ export class RealTimeDrawingManager {
     offer: RTCSessionDescriptionInit
   ): Promise<RTCSessionDescriptionInit> {
     return await this.webrtcManager.createAnswer(peerId, offer);
+  }
+
+  private readFileAsDataUrl(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = (error) => reject(error);
+      reader.readAsDataURL(file);
+    });
+  }
+
+  private getImageInfo(dataUrl: string): Promise<{
+    width: number;
+    height: number;
+    image: HTMLImageElement;
+  }> {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve({ width: img.width, height: img.height, image: img });
+      img.onerror = (error) => reject(error);
+      img.src = dataUrl;
+    });
   }
 
   async handleAnswer(
