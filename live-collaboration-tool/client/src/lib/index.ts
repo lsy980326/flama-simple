@@ -47,6 +47,12 @@ export type {
 
 // 유틸리티
 export * from "./utils";
+export { CanvasCoordinateConverter } from "./utils/canvasCoordinateConverter";
+export type {
+  CanvasSize,
+  ThumbnailSize,
+  Coordinate,
+} from "./utils/canvasCoordinateConverter";
 
 // 어노테이션
 export { AnnotationService } from "./annotations/AnnotationService";

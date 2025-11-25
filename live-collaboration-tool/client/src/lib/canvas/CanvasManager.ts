@@ -980,10 +980,23 @@ export class CanvasManager {
   }
 
   // 캔버스 크기 조정
+  // PIXI renderer.resize()를 호출하면 자동으로:
+  // - app.renderer.width/height 업데이트
+  // - app.screen.width/height 업데이트
+  // - app.canvas (DOM 요소) 크기 자동 조절
   resize(width: number, height: number): void {
     if (this.app && this.app.renderer) {
-      // PIXI renderer와 screen 크기 모두 업데이트
+      const beforeSize = {
+        width: this.app.screen.width,
+        height: this.app.screen.height,
+      };
+      
+      
+      // PIXI renderer와 screen 크기 모두 자동 업데이트됨
+      // app.renderer.resize()는 내부적으로 app.screen 크기도 업데이트하고
+      // app.canvas DOM 요소의 크기도 자동으로 조절함
       this.app.renderer.resize(width, height);
+      
       // hitArea 업데이트 (캔버스 크기 변경 시 좌표 변환 정확도 유지)
       if (this.app.stage) {
         this.app.stage.hitArea = this.app.screen;
@@ -996,8 +1009,17 @@ export class CanvasManager {
         this.backgroundSprite.anchor.set(0, 0);
       }
 
+      // 실제로 업데이트되었는지 확인
+      const afterSize = {
+        width: this.app.screen.width,
+        height: this.app.screen.height,
+        canvasWidth: this.app.canvas?.width,
+        canvasHeight: this.app.canvas?.height,
+      };
+
       // adjustCanvasSizeForObjects는 resize를 호출할 수 있으므로 여기서 호출하면 무한 루프 발생
       // 따라서 resize에서는 크기만 조정하고, adjustCanvasSizeForObjects는 객체 추가 시에만 호출
+    } else {
     }
   }
 
@@ -1509,17 +1531,20 @@ export class CanvasManager {
       height: number;
     }> = [];
 
-    // 배경 이미지 bounds
-    if (this.backgroundSprite) {
+    // 배경 이미지 bounds (실제 그려진 영역 사용)
+    if (this.backgroundSprite && this.backgroundOriginalSize) {
+      // 실제 그려진 영역을 정확히 가져오기 위해 getBounds(true) 사용
       const bgBounds = this.backgroundSprite.getBounds(true);
       bounds.push({
         id: "background",
         type: "background",
-        x: bgBounds.x,
-        y: bgBounds.y,
+        x: Math.max(0, bgBounds.x), // 음수 좌표 방지
+        y: Math.max(0, bgBounds.y), // 음수 좌표 방지
         width: bgBounds.width,
         height: bgBounds.height,
       });
+      
+      // 배경 이미지 bounds 계산
     }
 
     // 모든 객체 bounds
@@ -1553,27 +1578,150 @@ export class CanvasManager {
     }
 
     try {
-      // 캔버스 크기
-      const canvasWidth = this.app.screen.width;
-      const canvasHeight = this.app.screen.height;
+      // 실제 내용 범위 계산
+      const allBounds = this.getAllObjectsBounds();
+      
+      let contentMinX: number;
+      let contentMinY: number;
+      let contentWidth: number;
+      let contentHeight: number;
+      
+      if (allBounds.length === 0) {
+        // 내용이 없으면 기본 크기 사용
+        const canvasWidth = this.app.screen.width;
+        const canvasHeight = this.app.screen.height;
+        if (canvasWidth === 0 || canvasHeight === 0) {
+          console.warn("썸네일 생성: 캔버스 크기가 0");
+          return null;
+        }
+        contentMinX = 0;
+        contentMinY = 0;
+        contentWidth = canvasWidth;
+        contentHeight = canvasHeight;
+        
+      } else {
+        // 실제 렌더링된 픽셀을 확인하여 여백 제거
+        // 먼저 렌더링 강제 업데이트
+        this.app.renderer.render(this.app.stage);
+        const canvas = this.app.canvas as HTMLCanvasElement;
+        
+        if (canvas && canvas.width > 0 && canvas.height > 0) {
+          // 캔버스의 픽셀 데이터를 읽어서 실제로 그려진 영역 찾기
+          const tempCanvas = document.createElement("canvas");
+          tempCanvas.width = canvas.width;
+          tempCanvas.height = canvas.height;
+          const tempCtx = tempCanvas.getContext("2d");
+          
+          if (tempCtx) {
+            // 원본 캔버스를 임시 캔버스에 복사
+            tempCtx.drawImage(canvas, 0, 0);
+            const imageData = tempCtx.getImageData(0, 0, canvas.width, canvas.height);
+            const data = imageData.data;
+            
+            // 투명하지 않은 픽셀의 최소/최대 좌표 찾기
+            let minX = Infinity;
+            let minY = Infinity;
+            let maxX = -Infinity;
+            let maxY = -Infinity;
+            
+            for (let y = 0; y < canvas.height; y++) {
+              for (let x = 0; x < canvas.width; x++) {
+                const index = (y * canvas.width + x) * 4;
+                const alpha = data[index + 3]; // Alpha 채널
+                
+                // 투명하지 않은 픽셀 (alpha > 0)
+                if (alpha > 0) {
+                  minX = Math.min(minX, x);
+                  minY = Math.min(minY, y);
+                  maxX = Math.max(maxX, x);
+                  maxY = Math.max(maxY, y);
+                }
+              }
+            }
+            
+            // 실제 내용 범위
+            if (minX !== Infinity && minY !== Infinity && maxX !== -Infinity && maxY !== -Infinity) {
+              contentMinX = Math.max(0, minX);
+              contentMinY = Math.max(0, minY);
+              contentWidth = maxX - contentMinX + 1; // +1은 마지막 픽셀 포함
+              contentHeight = maxY - contentMinY + 1;
+              
+            } else {
+              // 픽셀 분석 실패 시 bounds 기반 계산으로 폴백
+              let boundsMinX = Infinity;
+              let boundsMinY = Infinity;
+              let boundsMaxX = -Infinity;
+              let boundsMaxY = -Infinity;
+              
+              allBounds.forEach(bound => {
+                boundsMinX = Math.min(boundsMinX, bound.x);
+                boundsMinY = Math.min(boundsMinY, bound.y);
+                boundsMaxX = Math.max(boundsMaxX, bound.x + bound.width);
+                boundsMaxY = Math.max(boundsMaxY, bound.y + bound.height);
+              });
+              
+              contentMinX = Math.max(0, boundsMinX);
+              contentMinY = Math.max(0, boundsMinY);
+              contentWidth = Math.min(boundsMaxX, this.app.screen.width) - contentMinX;
+              contentHeight = Math.min(boundsMaxY, this.app.screen.height) - contentMinY;
+              
+            }
+          } else {
+            // 2D 컨텍스트를 가져올 수 없으면 bounds 기반 계산
+            let boundsMinX = Infinity;
+            let boundsMinY = Infinity;
+            let boundsMaxX = -Infinity;
+            let boundsMaxY = -Infinity;
+            
+            allBounds.forEach(bound => {
+              boundsMinX = Math.min(boundsMinX, bound.x);
+              boundsMinY = Math.min(boundsMinY, bound.y);
+              boundsMaxX = Math.max(boundsMaxX, bound.x + bound.width);
+              boundsMaxY = Math.max(boundsMaxY, bound.y + bound.height);
+            });
+            
+            contentMinX = Math.max(0, boundsMinX);
+            contentMinY = Math.max(0, boundsMinY);
+            contentWidth = Math.min(boundsMaxX, this.app.screen.width) - contentMinX;
+            contentHeight = Math.min(boundsMaxY, this.app.screen.height) - contentMinY;
+          }
+        } else {
+          // 캔버스가 없으면 bounds 기반 계산
+          let boundsMinX = Infinity;
+          let boundsMinY = Infinity;
+          let boundsMaxX = -Infinity;
+          let boundsMaxY = -Infinity;
+          
+          allBounds.forEach(bound => {
+            boundsMinX = Math.min(boundsMinX, bound.x);
+            boundsMinY = Math.min(boundsMinY, bound.y);
+            boundsMaxX = Math.max(boundsMaxX, bound.x + bound.width);
+            boundsMaxY = Math.max(boundsMaxY, bound.y + bound.height);
+          });
+          
+          contentMinX = Math.max(0, boundsMinX);
+          contentMinY = Math.max(0, boundsMinY);
+          contentWidth = Math.min(boundsMaxX, this.app.screen.width) - contentMinX;
+          contentHeight = Math.min(boundsMaxY, this.app.screen.height) - contentMinY;
+        }
+      }
 
-      if (canvasWidth === 0 || canvasHeight === 0) {
-        console.warn("썸네일 생성: 캔버스 크기가 0");
+      if (contentWidth === 0 || contentHeight === 0) {
+        console.warn("썸네일 생성: 내용 범위가 0");
         return null;
       }
 
       // WebGL 최대 텍스처 크기 확인
       const maxTextureSize = this.getMaxTextureSize();
 
-      // 스케일 계산 (원본 비율 유지하면서 최대 크기 내에 맞춤)
-      // 캔버스 전체가 포함되도록 보장
-      const scaleX = maxWidth / canvasWidth;
-      const scaleY = maxHeight / canvasHeight;
+      // 스케일 계산 (캔버스 전체의 비율 유지하면서 최대 크기 내에 맞춤)
+      const scaleX = maxWidth / contentWidth;
+      const scaleY = maxHeight / contentHeight;
       const scale = Math.min(scaleX, scaleY);
 
       // 썸네일 크기 (캔버스 전체를 포함하도록 정확히 계산)
-      const thumbnailWidth = Math.ceil(canvasWidth * scale);
-      const thumbnailHeight = Math.ceil(canvasHeight * scale);
+      const thumbnailWidth = Math.ceil(contentWidth * scale);
+      const thumbnailHeight = Math.ceil(contentHeight * scale);
 
       // 렌더링 강제 업데이트 (모든 내용이 렌더링되도록)
       this.app.renderer.render(this.app.stage);
@@ -1586,14 +1734,16 @@ export class CanvasManager {
       }
 
       // 캔버스가 WebGL 제한보다 크면 타일링 방식으로 처리
-      if (canvasWidth > maxTextureSize || canvasHeight > maxTextureSize) {
+      if (contentWidth > maxTextureSize || contentHeight > maxTextureSize) {
         return this.createThumbnailByTiling(
           canvas,
-          canvasWidth,
-          canvasHeight,
+          contentWidth,
+          contentHeight,
           thumbnailWidth,
           thumbnailHeight,
-          maxTextureSize
+          maxTextureSize,
+          contentMinX,
+          contentMinY
         );
       }
 
@@ -1610,21 +1760,56 @@ export class CanvasManager {
       // 고품질 스케일링
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = "high";
-      // 캔버스 전체를 정확히 그리기 (소스 크기와 타겟 크기 명시)
+      // 전체 캔버스를 썸네일로 변환 (좌표 변환을 간단하게 하기 위해)
+      // 전체 캔버스 크기로 썸네일 크기 재계산
+      const fullCanvasWidth = this.app.screen.width;
+      const fullCanvasHeight = this.app.screen.height;
+      const fullScaleX = maxWidth / fullCanvasWidth;
+      const fullScaleY = maxHeight / fullCanvasHeight;
+      const fullScale = Math.min(fullScaleX, fullScaleY);
+      const fullThumbnailWidth = Math.ceil(fullCanvasWidth * fullScale);
+      const fullThumbnailHeight = Math.ceil(fullCanvasHeight * fullScale);
+      
+      // 썸네일 캔버스 크기 조정
+      thumbnailCanvas.width = fullThumbnailWidth;
+      thumbnailCanvas.height = fullThumbnailHeight;
+      
+      // 전체 캔버스를 썸네일로 그리기
       ctx.drawImage(
         canvas,
         0,
         0,
-        canvasWidth,
-        canvasHeight, // 소스 영역 (전체 캔버스)
+        fullCanvasWidth,
+        fullCanvasHeight, // 소스 영역 (전체 캔버스)
         0,
         0,
-        thumbnailWidth,
-        thumbnailHeight // 타겟 영역
+        fullThumbnailWidth,
+        fullThumbnailHeight // 타겟 영역
       );
 
       const dataUrl = thumbnailCanvas.toDataURL("image/png");
-      console.log("썸네일 생성 성공:", dataUrl.substring(0, 50) + "...");
+      
+      // dataUrl이 유효한지 확인
+      if (!dataUrl || dataUrl === "data:," || dataUrl.length < 100) {
+        // dataUrl이 유효하지 않음, renderer.extract 사용
+        // WebGL 캔버스는 직접 toDataURL이 작동하지 않을 수 있으므로 renderer.extract 사용
+        try {
+          const extractedCanvas = this.app.renderer.extract.canvas(this.app.stage);
+          if (extractedCanvas && extractedCanvas.width > 0 && extractedCanvas.height > 0) {
+            const htmlCanvas = extractedCanvas as unknown as HTMLCanvasElement;
+            // 전체 캔버스를 썸네일로 변환
+            const fullDataUrl = htmlCanvas.toDataURL("image/png");
+            if (fullDataUrl && fullDataUrl !== "data:," && fullDataUrl.length > 100) {
+              return fullDataUrl;
+            }
+          }
+        } catch (error) {
+          console.error("🟢 [썸네일 생성] renderer.extract 실패:", error);
+        }
+        return null;
+      }
+      
+      
       return dataUrl;
     } catch (error) {
       console.error("썸네일 생성 실패:", error);
@@ -1641,7 +1826,9 @@ export class CanvasManager {
     sourceHeight: number,
     thumbnailWidth: number,
     thumbnailHeight: number,
-    maxTextureSize: number
+    maxTextureSize: number,
+    offsetX: number = 0,
+    offsetY: number = 0
   ): string | null {
     try {
       const thumbnailCanvas = document.createElement("canvas");
@@ -1673,11 +1860,11 @@ export class CanvasManager {
           const tileCtx = tileCanvas.getContext("2d");
           if (!tileCtx) continue;
 
-          // 타일 영역 복사
+          // 타일 영역 복사 (offset을 고려하여 실제 내용 영역만)
           tileCtx.drawImage(
             sourceCanvas,
-            x,
-            y,
+            offsetX + x,
+            offsetY + y,
             tileWidth,
             tileHeight,
             0,
@@ -1706,10 +1893,13 @@ export class CanvasManager {
       }
 
       const dataUrl = thumbnailCanvas.toDataURL("image/png");
-      console.log(
-        "썸네일 생성 성공 (타일링):",
-        dataUrl.substring(0, 50) + "..."
-      );
+      
+      // dataUrl이 유효한지 확인
+      if (!dataUrl || dataUrl === "data:," || dataUrl.length < 100) {
+        // 타일링 dataUrl이 유효하지 않음
+        return null;
+      }
+      
       return dataUrl;
     } catch (error) {
       console.error("타일링 썸네일 생성 실패:", error);

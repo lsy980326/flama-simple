@@ -374,16 +374,17 @@ function App() {
       if (bgState && bgState.originalSize) {
         const aspectRatio = bgState.originalSize.height / bgState.originalSize.width;
         const newHeight = targetWidth * aspectRatio;
+        
+        // PIXI 캔버스 크기 조절 (스크린과 캔버스 모두 자동 업데이트)
         canvasManager.resize(targetWidth, newHeight);
         
-        // 배경 이미지를 원본 크기로 설정하고 상단 중앙 정렬
+        // 배경 이미지를 0,0에서 시작하도록 설정하고 전체 이미지가 보이도록 스케일 조정
         const originalWidth = bgState.originalSize.width;
         const scale = targetWidth / originalWidth;
         drawingManager.setBackgroundScale(scale);
         
-        // 배경 이미지를 캔버스 상단 중앙에 배치
-        const scaledHeight = bgState.originalSize.height * scale;
-        canvasManager.setBackgroundPosition(targetWidth / 2, scaledHeight / 2);
+        // 배경 이미지를 0,0 위치에 배치 (전체 이미지가 보이도록)
+        canvasManager.setBackgroundPosition(0, 0);
       }
     } else {
       // 배경 이미지가 없으면 기본 높이로 설정

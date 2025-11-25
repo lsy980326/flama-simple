@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { RealTimeDrawingManager } from "../collaboration/RealTimeDrawingManager";
+import { CanvasCoordinateConverter } from "../utils/canvasCoordinateConverter";
 
 interface CanvasThumbnailNavigatorProps {
   manager: RealTimeDrawingManager | null;
@@ -15,22 +16,39 @@ interface CanvasThumbnailNavigatorProps {
 export const CanvasThumbnailNavigator: React.FC<CanvasThumbnailNavigatorProps> = ({
   manager: propManager,
   containerRef: propContainerRef,
-  width = 400, // 더 크게 설정하여 전체 내용이 보이도록
-  height = 600,
+  width = 600, // 가로 크기 확대 (400 → 600)
+  height = 800, // 세로 크기 확대 (600 → 800)
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const thumbnailImageRef = useRef<HTMLImageElement | null>(null);
   const [isVisible, setIsVisible] = useState(false); // 초기에는 숨김
   
-  // isVisible 변경 감지 로그
-  useEffect(() => {
-    console.log("🟡 [미리보기] isVisible 상태 변경:", isVisible);
-  }, [isVisible]);
+  // isVisible 상태 추적 (디버깅용 로그 제거)
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
   const [thumbnailDataUrl, setThumbnailDataUrl] = useState<string | null>(null);
   const [activeManager, setActiveManager] = useState<RealTimeDrawingManager | null>(propManager);
   const [activeContainerRef, setActiveContainerRef] = useState<React.RefObject<HTMLDivElement | null>>(propContainerRef);
   const [hasGeneratedThumbnail, setHasGeneratedThumbnail] = useState(false); // 썸네일 생성 여부 추적
+  const isManuallyClosedRef = useRef(false); // 수동으로 닫았는지 추적
+  const [thumbnailDisplaySize, setThumbnailDisplaySize] = useState({ width: 0, height: 0 }); // 실제 미리보기에 그려진 크기
+  const coordinateConverterRef = useRef<CanvasCoordinateConverter | null>(null);
+  const contentOffsetRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 }); // 실제 내용 범위의 오프셋
+  const fixedDisplaySizeRef = useRef<{ width: number; height: number }>({ width: 0, height: 0 }); // 고정된 디스플레이 크기 (변경되지 않음)
+
+  // 캔버스 크기나 미리보기 크기 변경 시 컨버터 업데이트
+  useEffect(() => {
+    if (canvasSize.width > 0 && canvasSize.height > 0 && thumbnailDisplaySize.width > 0 && thumbnailDisplaySize.height > 0) {
+      if (coordinateConverterRef.current) {
+        coordinateConverterRef.current.updateCanvasSize(canvasSize);
+        coordinateConverterRef.current.updateThumbnailSize(thumbnailDisplaySize);
+      } else {
+        coordinateConverterRef.current = new CanvasCoordinateConverter(
+          canvasSize,
+          thumbnailDisplaySize
+        );
+      }
+    }
+  }, [canvasSize, thumbnailDisplaySize]);
 
   // 썸네일을 한 번만 생성하는 함수
   const generateThumbnailOnce = useCallback((managerToUse: RealTimeDrawingManager) => {
@@ -40,11 +58,36 @@ export const CanvasThumbnailNavigator: React.FC<CanvasThumbnailNavigatorProps> =
     const size = canvasManager.getCanvasSize();
     setCanvasSize(size);
 
-    // 실제 캔버스 이미지 추출 (원본 크기에 가깝게 고품질 썸네일 생성)
-    // 캔버스 전체가 포함되도록 충분히 큰 크기로 설정
-    const maxThumbnailWidth = width * 3;
+    // 실제 내용 범위 계산하여 오프셋 설정
+    const allBounds = canvasManager.getAllObjectsBounds();
+    if (allBounds.length > 0) {
+      let minX = Infinity;
+      let minY = Infinity;
+      
+      allBounds.forEach(bound => {
+        minX = Math.min(minX, bound.x);
+        minY = Math.min(minY, bound.y);
+      });
+      
+      // 실제 내용 범위의 오프셋 (최소 좌표)
+      contentOffsetRef.current = { 
+        x: Math.max(0, minX), 
+        y: Math.max(0, minY) 
+      };
+      
+    } else {
+      // 내용이 없으면 오프셋은 (0, 0)
+      contentOffsetRef.current = { x: 0, y: 0 };
+    }
+    
+
+    // 실제 캔버스 이미지 추출 (고해상도 썸네일 생성)
+    // devicePixelRatio를 고려하여 더 높은 해상도로 생성
+    const dpr = window.devicePixelRatio || 1;
+    const maxThumbnailWidth = width * 10 * dpr; // 고해상도로 생성 (4x → 10x)
     // 원본 비율을 유지하면서 높이 계산 (캔버스 전체가 포함되도록)
     const maxThumbnailHeight = size.height * (maxThumbnailWidth / size.width);
+    
     const dataUrl = canvasManager.getThumbnailDataUrl(maxThumbnailWidth, maxThumbnailHeight);
     if (dataUrl) {
       setThumbnailDataUrl(dataUrl);
@@ -55,19 +98,21 @@ export const CanvasThumbnailNavigator: React.FC<CanvasThumbnailNavigatorProps> =
   // 전역 이벤트 리스너: 캔버스 활성화 시 미리보기 생성
   useEffect(() => {
     const handleCanvasActivated = (e: CustomEvent) => {
-      console.log("🟡 [미리보기] canvas-activated 이벤트 수신");
+      // 수동으로 닫은 경우에는 다시 열지 않음
+      if (isManuallyClosedRef.current) {
+        return;
+      }
+      
       const newManager = e.detail.manager;
       const newContainer = e.detail.container;
       
       // manager가 변경되었는지 확인
       const managerChanged = activeManager !== newManager;
-      console.log("🟡 [미리보기] manager 변경 여부:", managerChanged);
       
       setActiveManager(newManager);
       setActiveContainerRef({ current: newContainer });
       
       // 캔버스 클릭 시 미리보기 표시
-      console.log("🟡 [미리보기] setIsVisible(true) 호출");
       setIsVisible(true);
       
       // manager가 변경되었거나 썸네일이 없으면 생성
@@ -91,6 +136,14 @@ export const CanvasThumbnailNavigator: React.FC<CanvasThumbnailNavigatorProps> =
       window.removeEventListener('canvas-activated', handleCanvasActivated as EventListener);
     };
   }, [propManager, propContainerRef, hasGeneratedThumbnail, generateThumbnailOnce, activeManager]);
+
+  // propManager가 있고 썸네일이 없으면 자동으로 생성
+  useEffect(() => {
+    if (propManager && !hasGeneratedThumbnail && !isManuallyClosedRef.current) {
+      generateThumbnailOnce(propManager);
+      setIsVisible(true);
+    }
+  }, [propManager, hasGeneratedThumbnail, generateThumbnailOnce]);
 
   const manager = activeManager || propManager;
   const containerRef = activeContainerRef || propContainerRef;
@@ -116,78 +169,145 @@ export const CanvasThumbnailNavigator: React.FC<CanvasThumbnailNavigatorProps> =
 
     // 썸네일 이미지 로드
     const img = new Image();
+    img.onerror = () => {
+      // 이미지 로드 실패 시 조용히 처리
+    };
     img.onload = () => {
       if (!canvas || !container) return;
 
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
 
-      // 원본 이미지 비율에 맞춰 캔버스 크기 계산 (긴 이미지도 전체가 보이도록)
-      const imgAspect = img.width / img.height;
-      const targetWidth = width;
-      const targetHeight = width / imgAspect; // 원본 비율 유지
+      // 컨테이너 크기 (스크롤 가능하도록 충분한 공간 확보)
+      const maxWidth = width;
+      const containerHeight = container?.clientHeight || height || 800;
+      const maxHeight = Math.max(containerHeight, height);
       
-      // 캔버스 크기 조정
-      canvas.width = targetWidth;
-      canvas.height = targetHeight;
+      // 이미지 비율 유지하면서 표시 크기 계산
+      const imgAspect = img.width / img.height;
+      
+      let displayWidth: number;
+      let displayHeight: number;
+      
+      // 가로를 기준으로 세로 계산 (가로를 꽉 채움)
+      displayWidth = maxWidth;
+      displayHeight = maxWidth / imgAspect;
+      
+      // 세로가 너무 길면 스크롤 가능하도록 원본 비율 유지
+      
+      // 고해상도 렌더링을 위한 devicePixelRatio 고려
+      const dpr = window.devicePixelRatio || 1;
+      
+      // 실제 캔버스 크기는 디스플레이 크기 × DPR × 2 (더 높은 해상도)
+      const canvasWidth = displayWidth * dpr * 2;
+      const canvasHeight = displayHeight * dpr * 2;
+      
+      
+      // 실제 미리보기에 그려진 크기 저장 (디스플레이 크기)
+      // 한 번 설정되면 변경되지 않도록 함
+      if (thumbnailDisplaySize.width === 0 || thumbnailDisplaySize.height === 0) {
+        setThumbnailDisplaySize({ width: displayWidth, height: displayHeight });
+        fixedDisplaySizeRef.current = { width: displayWidth, height: displayHeight };
+      }
+      
+      // 캔버스 크기 조정 (고해상도) - 이미 설정되어 있으면 변경하지 않음
+      if (canvas.width !== canvasWidth || canvas.height !== canvasHeight) {
+        canvas.width = canvasWidth;
+        canvas.height = canvasHeight;
+      }
+      
+      // CSS 크기는 디스플레이 크기로 설정 (이미지 비율에 맞춤) - 이미 설정되어 있으면 변경하지 않음
+      if (canvas.style.width !== `${displayWidth}px` || canvas.style.height !== `${displayHeight}px`) {
+        canvas.style.width = `${displayWidth}px`;
+        canvas.style.height = `${displayHeight}px`;
+      }
 
-      // 캔버스 초기화
-      ctx.clearRect(0, 0, targetWidth, targetHeight);
-      ctx.fillStyle = "#f0f0f0";
-      ctx.fillRect(0, 0, targetWidth, targetHeight);
+      // 고해상도 렌더링을 위한 스케일 적용 (DPR × 2)
+      // 스케일은 매번 리셋하고 다시 적용
+      ctx.setTransform(1, 0, 0, 1, 0, 0); // 리셋
+      ctx.scale(dpr * 2, dpr * 2);
+      
+      // 캔버스 초기화 (디스플레이 크기만큼)
+      ctx.clearRect(0, 0, displayWidth, displayHeight);
+      // 배경색 제거 (투명하게)
+      // ctx.fillStyle = "#f0f0f0";
+      // ctx.fillRect(0, 0, displayWidth, displayHeight);
 
-      // 썸네일 이미지 그리기 (고품질 스케일링, 전체 이미지 표시)
+      // 썸네일 이미지를 비율 유지하면서 디스플레이 크기에 맞춰 그리기 (고해상도)
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = "high";
-      ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
-
-      // 스케일 계산: 미리보기 캔버스에 그려진 크기와 원본 캔버스 크기의 비율
-      // 이것이 가장 직접적이고 정확한 방법입니다
-      // targetWidth, targetHeight는 미리보기 캔버스에 실제로 그려진 크기
-      // canvasSize.width, canvasSize.height는 원본 PIXI 캔버스 크기
-      const finalScaleX = targetWidth / canvasSize.width;
-      const finalScaleY = targetHeight / canvasSize.height;
-
-      // 뷰포트 영역 계산: 스크롤 위치를 미리보기 좌표로 변환
-      // 스크롤 컨테이너의 scrollLeft/scrollTop은 PIXI 캔버스의 절대 좌표와 일치
-      // 따라서 스크롤 위치 * 스케일 = 미리보기 좌표
-      const viewportX = container.scrollLeft * finalScaleX;
-      const viewportY = container.scrollTop * finalScaleY;
-      const viewportWidth = container.clientWidth * finalScaleX;
-      const viewportHeight = container.clientHeight * finalScaleY;
+      ctx.drawImage(
+        img, 
+        0, 0, img.width, img.height, 
+        0, 0, displayWidth, displayHeight
+      );
       
-      // 뷰포트가 썸네일 영역을 벗어나지 않도록 제한
-      const clampedViewportX = Math.max(0, Math.min(viewportX, targetWidth - Math.min(viewportWidth, targetWidth)));
-      const clampedViewportY = Math.max(0, Math.min(viewportY, targetHeight - Math.min(viewportHeight, targetHeight)));
-      const clampedViewportWidth = Math.min(viewportWidth, targetWidth - clampedViewportX);
-      const clampedViewportHeight = Math.min(viewportHeight, targetHeight - clampedViewportY);
 
-      // 뷰포트 영역 표시 (더 두껍고 명확하게)
-      ctx.strokeStyle = "#2196F3";
-      ctx.lineWidth = 3;
-      ctx.setLineDash([8, 4]);
-      ctx.strokeRect(clampedViewportX, clampedViewportY, clampedViewportWidth, clampedViewportHeight);
-      ctx.setLineDash([]);
+      // CanvasCoordinateConverter를 사용하여 정확한 좌표 변환
+      // 중요: 썸네일 이미지의 실제 크기(img.width, img.height)를 기준으로 변환해야 함
+      // 썸네일 이미지가 캔버스를 캡처했으므로, 이미지 크기와 캔버스 크기의 비율을 사용
+      if (canvasSize.width > 0 && canvasSize.height > 0 && img.width > 0 && img.height > 0) {
+        // 컨버터는 디스플레이 크기를 기준으로 생성 (이미지 비율에 맞춘 크기)
+        const converter = new CanvasCoordinateConverter(
+          { width: canvasSize.width, height: canvasSize.height },
+          { width: displayWidth, height: displayHeight }
+        );
+        coordinateConverterRef.current = converter;
+        
+
+        // 뷰포트 영역 계산: 스크롤 위치를 미리보기 좌표로 변환
+        const viewportThumbnail = converter.scrollToThumbnail(
+          container.scrollLeft,
+          container.scrollTop
+        );
+        const viewportSize = converter.viewportToThumbnailSize(
+          container.clientWidth,
+          container.clientHeight
+        );
+        
+        const viewportX = viewportThumbnail.x;
+        const viewportY = viewportThumbnail.y;
+        const viewportWidth = viewportSize.width;
+        const viewportHeight = viewportSize.height;
+        
+        // 디버깅: 변환된 뷰포트 좌표
+        });
       
-      // 뷰포트 영역 배경 반투명 처리
-      ctx.fillStyle = "rgba(33, 150, 243, 0.1)";
-      ctx.fillRect(clampedViewportX, clampedViewportY, clampedViewportWidth, clampedViewportHeight);
-      
-      // 디버깅: 좌표 정보 표시
-      ctx.fillStyle = "#FF0000";
-      ctx.font = "10px monospace";
-      ctx.textBaseline = "top";
-      const debugText = [
-        `Scroll: (${Math.round(container.scrollLeft)}, ${Math.round(container.scrollTop)})`,
-        `Canvas: ${canvasSize.width}x${canvasSize.height}`,
-        `Display: ${targetWidth.toFixed(0)}x${targetHeight.toFixed(0)}`,
-        `Scale: ${finalScaleX.toFixed(4)}`,
-        `Viewport: (${Math.round(clampedViewportX)}, ${Math.round(clampedViewportY)})`,
-        `Size: ${Math.round(clampedViewportWidth)}x${Math.round(clampedViewportHeight)}`,
-      ];
-      debugText.forEach((text, i) => {
-        ctx.fillText(text, clampedViewportX + 5, clampedViewportY + 5 + i * 12);
-      });
+      // 뷰포트가 썸네일 영역을 벗어나지 않도록 제한 (디스플레이 크기 기준)
+      const clampedViewportX = Math.max(0, Math.min(viewportX, displayWidth - Math.min(viewportWidth, displayWidth)));
+      const clampedViewportY = Math.max(0, Math.min(viewportY, displayHeight - Math.min(viewportHeight, displayHeight)));
+      const clampedViewportWidth = Math.min(viewportWidth, displayWidth - clampedViewportX);
+      const clampedViewportHeight = Math.min(viewportHeight, displayHeight - clampedViewportY);
+
+        // 뷰포트 영역 표시 (더 두껍고 명확하게)
+        ctx.strokeStyle = "#2196F3";
+        ctx.lineWidth = 3;
+        ctx.setLineDash([8, 4]);
+        ctx.strokeRect(clampedViewportX, clampedViewportY, clampedViewportWidth, clampedViewportHeight);
+        ctx.setLineDash([]);
+        
+        // 뷰포트 영역 배경 반투명 처리
+        ctx.fillStyle = "rgba(33, 150, 243, 0.1)";
+        ctx.fillRect(clampedViewportX, clampedViewportY, clampedViewportWidth, clampedViewportHeight);
+        
+        // 디버깅: 좌표 정보 표시
+        ctx.fillStyle = "#FF0000";
+        ctx.font = "10px monospace";
+        ctx.textBaseline = "top";
+        const scale = converter.getScale();
+        const debugText = [
+          `Scroll: (${Math.round(container.scrollLeft)}, ${Math.round(container.scrollTop)})`,
+          `Canvas: ${canvasSize.width}x${canvasSize.height}`,
+          `Img: ${img.width}x${img.height}`,
+          `Display: ${displayWidth.toFixed(0)}x${displayHeight.toFixed(0)}`,
+          `Scale: ${scale.scaleX.toFixed(4)}x${scale.scaleY.toFixed(4)}`,
+          `Viewport: (${Math.round(clampedViewportX)}, ${Math.round(clampedViewportY)})`,
+          `Size: ${Math.round(clampedViewportWidth)}x${Math.round(clampedViewportHeight)}`,
+        ];
+        debugText.forEach((text, i) => {
+          ctx.fillText(text, clampedViewportX + 5, clampedViewportY + 5 + i * 12);
+        });
+      }
     };
     img.src = thumbnailDataUrl;
     thumbnailImageRef.current = img;
@@ -212,28 +332,41 @@ export const CanvasThumbnailNavigator: React.FC<CanvasThumbnailNavigatorProps> =
       if (!ctx) return;
 
       // 이미지가 이미 그려져 있으므로, 뷰포트 표시만 업데이트
-      // 전체를 다시 그리지 않고, 뷰포트 영역만 다시 그리기
-      const imgAspect = img.width / img.height;
-      const targetWidth = width;
-      const targetHeight = width / imgAspect;
+      // 고정된 디스플레이 크기 사용 (절대 변경되지 않음)
+      const { width: displayWidth, height: displayHeight } = fixedDisplaySizeRef.current;
       
-      // 이전 뷰포트 영역 지우기 (전체를 다시 그리는 대신, 이전 뷰포트 영역만 복원)
-      // 성능을 위해 이미지 영역만 다시 그리기
+      if (displayWidth === 0 || displayHeight === 0) return;
+      
+      // 뷰포트 오버레이만 업데이트
+      // 이미지 크기나 캔버스 크기를 절대 변경하지 않음
       ctx.save();
-      ctx.globalCompositeOperation = 'source-over';
       
-      // 이미지 영역만 다시 그리기 (뷰포트 표시를 위해)
-      ctx.clearRect(0, 0, targetWidth, targetHeight);
-      ctx.fillStyle = "#f0f0f0";
-      ctx.fillRect(0, 0, targetWidth, targetHeight);
+      // 고해상도 렌더링을 위한 devicePixelRatio 고려
+      const dpr = window.devicePixelRatio || 1;
+      // 기존 스케일을 유지하고 뷰포트만 그리기
+      ctx.setTransform(1, 0, 0, 1, 0, 0); // 리셋
+      ctx.scale(dpr * 2, dpr * 2);
+      
+      // 이미지 크기가 변경되지 않도록 고정된 크기 사용
+      const fixedDisplayWidth = displayWidth;
+      const fixedDisplayHeight = displayHeight;
+      
+      // 이전 뷰포트 영역을 지우기 위해 이미지를 다시 그리기 (크기는 절대 변경하지 않음)
+      // 하지만 이미지 자체는 이미 그려져 있으므로, 뷰포트 오버레이만 업데이트
+      // 이전 뷰포트를 지우고 새 뷰포트를 그리기 위해 이미지를 다시 그려야 함
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.clearRect(0, 0, fixedDisplayWidth, fixedDisplayHeight);
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = "high";
-      ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+      // 이미지 크기는 절대 변경하지 않고 고정된 크기 사용
+      ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, fixedDisplayWidth, fixedDisplayHeight);
 
-      // 스케일 계산: 미리보기 캔버스에 그려진 크기와 원본 캔버스 크기의 비율
-      // 이것이 가장 직접적이고 정확한 방법입니다
-      const finalScaleX = targetWidth / canvasSize.width;
-      const finalScaleY = targetHeight / canvasSize.height;
+      // CanvasCoordinateConverter를 사용하여 정확한 좌표 변환
+      const converter = coordinateConverterRef.current;
+      if (!converter || canvasSize.width === 0 || canvasSize.height === 0) {
+        ctx.restore();
+        return;
+      }
 
       // 뷰포트 영역 계산 (스크롤 위치 기준)
       const scrollLeft = container.scrollLeft;
@@ -242,16 +375,19 @@ export const CanvasThumbnailNavigator: React.FC<CanvasThumbnailNavigatorProps> =
       const clientHeight = container.clientHeight;
       
       // 스크롤 위치를 미리보기 좌표로 변환
-      const viewportX = scrollLeft * finalScaleX;
-      const viewportY = scrollTop * finalScaleY;
-      const viewportWidth = clientWidth * finalScaleX;
-      const viewportHeight = clientHeight * finalScaleY;
+      const viewportThumbnail = converter.scrollToThumbnail(scrollLeft, scrollTop);
+      const viewportSize = converter.viewportToThumbnailSize(clientWidth, clientHeight);
       
-      // 뷰포트가 썸네일 영역을 벗어나지 않도록 제한
-      const clampedViewportX = Math.max(0, Math.min(viewportX, targetWidth - Math.min(viewportWidth, targetWidth)));
-      const clampedViewportY = Math.max(0, Math.min(viewportY, targetHeight - Math.min(viewportHeight, targetHeight)));
-      const clampedViewportWidth = Math.min(viewportWidth, targetWidth - clampedViewportX);
-      const clampedViewportHeight = Math.min(viewportHeight, targetHeight - clampedViewportY);
+      const viewportX = viewportThumbnail.x;
+      const viewportY = viewportThumbnail.y;
+      const viewportWidth = viewportSize.width;
+      const viewportHeight = viewportSize.height;
+      
+      // 뷰포트가 썸네일 영역을 벗어나지 않도록 제한 (고정된 디스플레이 크기 기준)
+      const clampedViewportX = Math.max(0, Math.min(viewportX, fixedDisplayWidth - Math.min(viewportWidth, fixedDisplayWidth)));
+      const clampedViewportY = Math.max(0, Math.min(viewportY, fixedDisplayHeight - Math.min(viewportHeight, fixedDisplayHeight)));
+      const clampedViewportWidth = Math.min(viewportWidth, fixedDisplayWidth - clampedViewportX);
+      const clampedViewportHeight = Math.min(viewportHeight, fixedDisplayHeight - clampedViewportY);
 
       // 뷰포트 영역 표시 (더 두껍고 명확하게)
       ctx.strokeStyle = "#2196F3";
@@ -268,16 +404,16 @@ export const CanvasThumbnailNavigator: React.FC<CanvasThumbnailNavigatorProps> =
       ctx.fillStyle = "#FF0000";
       ctx.font = "10px monospace";
       ctx.textBaseline = "top";
-      const debugText = [
-        `Scroll: (${Math.round(scrollLeft)}, ${Math.round(scrollTop)})`,
-        `Canvas: ${canvasSize.width}x${canvasSize.height}`,
-        `Img: ${img.width}x${img.height}`,
-        `Display: ${targetWidth.toFixed(0)}x${targetHeight.toFixed(0)}`,
-        `Scale: ${finalScaleX.toFixed(4)}`,
-        `Calc: ${Math.round(scrollLeft)} * ${finalScaleX.toFixed(4)} = ${(scrollLeft * finalScaleX).toFixed(1)}`,
-        `Viewport: (${Math.round(clampedViewportX)}, ${Math.round(clampedViewportY)})`,
-        `Size: ${Math.round(clampedViewportWidth)}x${Math.round(clampedViewportHeight)}`,
-      ];
+      const scale = converter.getScale();
+        const debugText = [
+          `Scroll: (${Math.round(scrollLeft)}, ${Math.round(scrollTop)})`,
+          `Canvas: ${canvasSize.width}x${canvasSize.height}`,
+          `Img: ${img.width}x${img.height}`,
+          `Display: ${displayWidth.toFixed(0)}x${displayHeight.toFixed(0)}`,
+          `Scale: ${scale.scaleX.toFixed(4)}x${scale.scaleY.toFixed(4)}`,
+          `Viewport: (${Math.round(clampedViewportX)}, ${Math.round(clampedViewportY)})`,
+          `Size: ${Math.round(clampedViewportWidth)}x${Math.round(clampedViewportHeight)}`,
+        ];
       debugText.forEach((text, i) => {
         ctx.fillText(text, clampedViewportX + 5, clampedViewportY + 5 + i * 12);
       });
@@ -291,46 +427,55 @@ export const CanvasThumbnailNavigator: React.FC<CanvasThumbnailNavigatorProps> =
       if (scrollTimeout) clearTimeout(scrollTimeout);
       container.removeEventListener("scroll", handleScroll);
     };
-  }, [thumbnailDataUrl, canvasSize, width, height, containerRef, isVisible]);
+  }, [thumbnailDataUrl, canvasSize, width, height, containerRef, isVisible, thumbnailDisplaySize]);
 
   // 미리보기 클릭 시 해당 위치로 스크롤 이동
   const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
     const canvas = canvasRef.current;
     const container = containerRef.current;
-    const img = thumbnailImageRef.current;
-    if (!canvas || !container || !img || canvasSize.width === 0 || canvasSize.height === 0) return;
+    const converter = coordinateConverterRef.current;
+    if (!canvas || !container || !converter || canvasSize.width === 0 || canvasSize.height === 0) return;
 
+    // 클릭 좌표 계산 (CSS 크기 기준, DPR 고려 불필요)
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    // 이미지가 실제로 그려진 영역 계산 (비율 유지)
-    const imgAspect = img.width / img.height;
-    const targetWidth = width;
-    const targetHeight = width / imgAspect;
+    // 실제 미리보기에 그려진 크기 사용 (디스플레이 크기)
+    const { width: displayWidth, height: displayHeight } = thumbnailDisplaySize;
 
-    // 클릭한 위치가 이미지 영역 내인지 확인
-    if (x < 0 || x > targetWidth || y < 0 || y > targetHeight) {
-      return; // 이미지 영역 밖 클릭은 무시
+    // 클릭한 위치가 디스플레이 영역 내인지 확인
+    if (displayWidth === 0 || displayHeight === 0) {
+      return;
+    }
+    
+    if (x < 0 || x > displayWidth || y < 0 || y > displayHeight) {
+      return; // 디스플레이 영역 밖 클릭은 무시
     }
 
-    // 스케일 계산 (실제 그려진 이미지 영역 기준)
-    // targetWidth, targetHeight는 미리보기 캔버스에 실제로 그려진 크기
-    const scaleX = targetWidth / canvasSize.width;
-    const scaleY = targetHeight / canvasSize.height;
-    // 비율이 다를 수 있으므로 각각 계산
-    const actualX = x / scaleX;
-    const actualY = y / scaleY;
+    // CanvasCoordinateConverter를 사용하여 정확한 좌표 변환
+    // 썸네일이 실제 내용 범위만 포함하므로, contentOffset을 사용하지 않고 직접 변환
+    // 썸네일 좌표를 캔버스 좌표로 변환 (썸네일은 전체 캔버스를 나타냄)
+    const canvasCoord = converter.thumbnailToCanvas({ x, y });
+    
+    // 클릭한 위치가 뷰포트 중앙에 오도록 스크롤 위치 계산
+    const scrollLeft = Math.max(0, Math.min(canvasCoord.x - container.clientWidth / 2, canvasSize.width - container.clientWidth));
+    const scrollTop = Math.max(0, Math.min(canvasCoord.y - container.clientHeight / 2, canvasSize.height - container.clientHeight));
+    
+    const scrollPosition = { scrollLeft, scrollTop };
 
-    // 스크롤 이동 (뷰포트 중앙에 위치하도록)
-    const scrollX = actualX - container.clientWidth / 2;
-    const scrollY = actualY - container.clientHeight / 2;
+    // 스크롤 이동 (최소/최대값 제한)
+    const maxScrollLeft = Math.max(0, container.scrollWidth - container.clientWidth);
+    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    const finalScrollLeft = Math.max(0, Math.min(scrollPosition.scrollLeft, maxScrollLeft));
+    const finalScrollTop = Math.max(0, Math.min(scrollPosition.scrollTop, maxScrollTop));
 
-    container.scrollTo({
-      left: Math.max(0, scrollX),
-      top: Math.max(0, scrollY),
-      behavior: "smooth",
-    });
+    // 즉시 스크롤 (smooth 스크롤이 문제를 일으킬 수 있음)
+    container.scrollLeft = finalScrollLeft;
+    container.scrollTop = finalScrollTop;
   };
 
   // manager가 없으면 아무것도 렌더링하지 않음
@@ -340,7 +485,6 @@ export const CanvasThumbnailNavigator: React.FC<CanvasThumbnailNavigatorProps> =
 
   // 미리보기가 닫혀있으면 열기 버튼만 표시
   if (!isVisible) {
-    console.log("🟡 [미리보기] 렌더링: 닫힌 상태, 열기 버튼만 표시");
     return (
       <div
         style={{
@@ -357,9 +501,11 @@ export const CanvasThumbnailNavigator: React.FC<CanvasThumbnailNavigatorProps> =
         <button
           type="button"
           onClick={(e) => {
-            console.log("🟡 [미리보기] 열기 버튼 클릭");
             e.preventDefault();
             e.stopPropagation();
+            
+            // 열기 버튼을 클릭하면 수동으로 닫은 플래그 해제
+            isManuallyClosedRef.current = false;
             setIsVisible(true);
           }}
           style={{
@@ -380,7 +526,6 @@ export const CanvasThumbnailNavigator: React.FC<CanvasThumbnailNavigatorProps> =
     );
   }
   
-  console.log("🟡 [미리보기] 렌더링: 열린 상태, 미리보기 패널 표시");
 
   return (
     <div
@@ -388,8 +533,8 @@ export const CanvasThumbnailNavigator: React.FC<CanvasThumbnailNavigatorProps> =
         position: "fixed",
         top: 20,
         right: 20,
-        width: width + 20,
-        padding: 10,
+        width: width + 40, // 패딩 포함하여 가로 크기 확대
+        padding: 20,
         backgroundColor: "white",
         border: "1px solid #ccc",
         borderRadius: 8,
@@ -411,18 +556,17 @@ export const CanvasThumbnailNavigator: React.FC<CanvasThumbnailNavigatorProps> =
         <button
           type="button"
           onClick={(e) => {
-            console.log("🟡 [미리보기] 닫기 버튼 onClick 이벤트 발생");
             e.preventDefault();
             e.stopPropagation();
             if (e.nativeEvent && e.nativeEvent.stopImmediatePropagation) {
               e.nativeEvent.stopImmediatePropagation();
             }
-            console.log("🟡 [미리보기] 현재 isVisible:", isVisible);
-            console.log("🟡 [미리보기] setIsVisible(false) 호출");
+            
+            // 수동으로 닫았다는 플래그 설정
+            isManuallyClosedRef.current = true;
             setIsVisible(false);
             setHasGeneratedThumbnail(false); // 닫을 때 썸네일 리셋
             setThumbnailDataUrl(null); // 썸네일 데이터도 제거
-            console.log("🟡 [미리보기] 닫기 완료");
           }}
           onMouseDown={(e) => {
             e.preventDefault();
@@ -458,24 +602,27 @@ export const CanvasThumbnailNavigator: React.FC<CanvasThumbnailNavigatorProps> =
       <div
         style={{
           overflow: "auto",
-          maxHeight: "calc(100vh - 100px)",
+          maxHeight: "calc(100vh - 120px)",
           flex: 1,
+          position: "relative",
+          width: "100%",
+          minHeight: 400,
         }}
       >
         {thumbnailDataUrl ? (
           <canvas
             ref={canvasRef}
-            width={width}
-            height={height}
             onClick={handleClick}
             style={{
               cursor: "pointer",
               border: "1px solid #ddd",
               borderRadius: 4,
               display: "block",
-              width: width,
-              height: "auto",
-              maxWidth: width,
+              width: thumbnailDisplaySize.width > 0 ? `${thumbnailDisplaySize.width}px` : `${width}px`,
+              height: thumbnailDisplaySize.height > 0 ? `${thumbnailDisplaySize.height}px` : "auto",
+              maxWidth: "100%",
+              imageRendering: "auto",
+              minWidth: `${width}px`,
             }}
           />
         ) : (

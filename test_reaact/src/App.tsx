@@ -10,6 +10,7 @@ import {
   HwpAdapter,
   MeAdapter,
   DocumentModel,
+  WEBTOON_WIDTH_OPTIONS,
   type DocumentParser,
   type DocumentRange,
   type DocumentViewerAction,
@@ -518,6 +519,7 @@ export default function App() {
   const [customTransform, setCustomTransform] = React.useState(false);
   const [customTransformHotkey, setCustomTransformHotkey] =
     React.useState(false);
+  const [customCanvasWidth, setCustomCanvasWidth] = React.useState<number | "default">("default");
   const customFileInputRef = React.useRef<HTMLInputElement>(null);
   const customOverlayInputRef = React.useRef<HTMLInputElement>(null);
   const customHasTransformTarget = React.useMemo(
@@ -718,7 +720,7 @@ export default function App() {
         아래 예제들은 `LiveCollabCanvas` 컴포넌트와 `DocumentViewer` 컴포넌트를
         다양한 방법으로 사용하는 모습을 보여줍니다.
       </p>
-
+      {/* 
       <Section
         title="1. 기본 도구 패널"
         description="가장 단순한 형태로 캔버스를 렌더링합니다. 같은 roomId를 사용하면 여러 브라우저에서 실시간으로 동기화됩니다."
@@ -818,7 +820,7 @@ export default function App() {
             </div>
           </div>
         )}
-      </Section>
+      </Section> */}
 
       <Section
         title="4. 커스텀 UI 연동"
@@ -934,6 +936,28 @@ export default function App() {
             />
             <span>{customScale.toFixed(2)}x</span>
           </label>
+          <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <span>캔버스 가로 크기</span>
+            <select
+              value={customCanvasWidth === "default" ? "default" : customCanvasWidth}
+              onChange={(e) => {
+                const newWidth = e.target.value === "default" ? "default" : Number(e.target.value);
+                setCustomCanvasWidth(newWidth);
+                if (customManager) {
+                  customManager.setCanvasWidth(newWidth, 800);
+                }
+              }}
+              disabled={!customManager}
+              style={{ flex: 1, padding: "4px" }}
+            >
+              <option value="default">기본 (800px)</option>
+              {WEBTOON_WIDTH_OPTIONS.map((w) => (
+                <option key={w} value={w}>
+                  {w}px
+                </option>
+              ))}
+            </select>
+          </label>
           <div style={{ fontSize: 12, color: "#666" }}>
             💡 Alt+T로 토글하거나 Ctrl을 누른 채 이미지를 클릭/드래그하면
             Transform 모드가 활성화됩니다.
@@ -946,6 +970,8 @@ export default function App() {
           user={lightweightUser}
           width={900}
           height={520}
+          canvasWidth={customCanvasWidth}
+          defaultCanvasWidth={800}
           showToolbar={false}
           onReady={({ manager }) => {
             setCustomManager(manager);
@@ -953,6 +979,8 @@ export default function App() {
             setCustomScale(Number(manager.getBackgroundScale().toFixed(2)));
             manager.setBrushSize(customBrush);
             manager.setBrushColor(customColor);
+            // 초기 캔버스 크기 설정
+            manager.setCanvasWidth(customCanvasWidth, 800);
           }}
         />
       </Section>

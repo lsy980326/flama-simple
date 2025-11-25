@@ -1,3 +1,4 @@
+import React from "react";
 import {
   YjsDrawingManager,
   DrawingOperation,
@@ -33,6 +34,7 @@ export class RealTimeDrawingManager {
   private pendingBackgroundState: BackgroundState | null = null;
   private backgroundUpdateTimer: ReturnType<typeof setTimeout> | null = null;
   private onObjectsChange?: (objects: CanvasObject[]) => void;
+  private scrollContainerRef: React.RefObject<HTMLDivElement | null> | null = null;
 
   // 콜백 함수들
   private onDrawingUpdate?: (operations: DrawingOperation[]) => void;
@@ -603,6 +605,52 @@ export class RealTimeDrawingManager {
     this.queueBackgroundStateSync(true);
   }
 
+  /**
+   * 스크롤 컨테이너 ref를 설정합니다.
+   * 이 ref는 오버레이 이미지 추가 시 현재 뷰포트 위치를 계산하는 데 사용됩니다.
+   */
+  setScrollContainer(ref: React.RefObject<HTMLDivElement | null> | null): void {
+    this.scrollContainerRef = ref;
+  }
+
+  /**
+   * 현재 뷰포트 중앙 좌표를 계산합니다.
+   * 스크롤 컨테이너가 설정되어 있으면 스크롤 위치를 기준으로 계산하고,
+   * 없으면 캔버스 중앙을 반환합니다.
+   */
+  private getCurrentViewportCenter(): { x: number; y: number } {
+    const { width: canvasWidth, height: canvasHeight } =
+      this.canvasManager.getCanvasSize();
+    
+    // 스크롤 컨테이너가 설정되어 있으면 현재 뷰포트 중앙 계산
+    if (this.scrollContainerRef?.current) {
+      const scrollContainer = this.scrollContainerRef.current;
+      const viewportX = scrollContainer.scrollLeft + scrollContainer.clientWidth / 2;
+      const viewportY = scrollContainer.scrollTop + scrollContainer.clientHeight / 2;
+      
+      console.log("🔵 [RealTimeDrawingManager] 뷰포트 중앙 계산:", {
+        scrollLeft: scrollContainer.scrollLeft,
+        scrollTop: scrollContainer.scrollTop,
+        clientWidth: scrollContainer.clientWidth,
+        clientHeight: scrollContainer.clientHeight,
+        viewportX,
+        viewportY,
+      });
+      
+      return { x: viewportX, y: viewportY };
+    }
+    
+    // 스크롤 컨테이너가 없으면 캔버스 중앙 반환
+    console.log("🔵 [RealTimeDrawingManager] 스크롤 컨테이너 없음, 캔버스 중앙 사용:", {
+      canvasWidth,
+      canvasHeight,
+      centerX: canvasWidth / 2,
+      centerY: canvasHeight / 2,
+    });
+    
+    return { x: canvasWidth / 2, y: canvasHeight / 2 };
+  }
+
   async addImageFromFile(file: File, viewportX?: number, viewportY?: number, maxWidth?: number): Promise<void> {
     if (!this.canvasManager.isReady()) {
       try {
@@ -619,12 +667,22 @@ export class RealTimeDrawingManager {
     // 가로 크기 제한 적용 (원본 이미지 유지, 스케일만 조절)
     // finalWidth, finalHeight는 사용하지 않지만 스케일 계산을 위해 유지
     
-    const { width: canvasWidth, height: canvasHeight } =
-      this.canvasManager.getCanvasSize();
+    // 뷰포트 좌표가 제공되면 사용, 없으면 현재 뷰포트 중앙 계산
+    let centerX: number;
+    let centerY: number;
     
-    // 뷰포트 좌표가 제공되면 사용, 아니면 캔버스 중앙
-    const centerX = viewportX !== undefined ? viewportX : canvasWidth / 2;
-    const centerY = viewportY !== undefined ? viewportY : canvasHeight / 2;
+    if (viewportX !== undefined && viewportY !== undefined) {
+      // 명시적으로 뷰포트 좌표가 제공된 경우
+      centerX = viewportX;
+      centerY = viewportY;
+      console.log("🔵 [RealTimeDrawingManager] 제공된 뷰포트 좌표 사용:", { centerX, centerY });
+    } else {
+      // 뷰포트 좌표가 없으면 현재 뷰포트 중앙 자동 계산
+      const viewportCenter = this.getCurrentViewportCenter();
+      centerX = viewportCenter.x;
+      centerY = viewportCenter.y;
+      console.log("🔵 [RealTimeDrawingManager] 자동 계산된 뷰포트 좌표:", { centerX, centerY });
+    }
 
     const id = this.yjsManager.addObject({
       type: "image",
@@ -680,14 +738,70 @@ export class RealTimeDrawingManager {
     return this.canvasManager.getBackgroundScale();
   }
 
+  /**
+   * 캔버스 가로 크기를 조절합니다.
+   * 배경 이미지가 있는 경우 비율에 맞춰 높이도 자동 조절하고, 배경 이미지를 0,0에 배치합니다.
+   * 배경 이미지가 없는 경우 가로 크기만 조절하고 세로는 현재 크기를 유지합니다.
+   * @param width 캔버스 가로 크기 (픽셀) 또는 "default" (기본값: 800)
+   * @param defaultWidth 기본 가로 크기 (width가 "default"일 때 사용, 기본값: 800)
+   */
+  setCanvasWidth(width: number | "default", defaultWidth: number = 800): void {
+    const targetWidth = width === "default" ? defaultWidth : width;
+    const canvasManager = this.canvasManager;
+    
+    if (this.hasBackgroundImage()) {
+      const bgState = canvasManager.getBackgroundState();
+      if (bgState && bgState.originalSize) {
+        // 배경 이미지의 세로 크기에 맞춰 캔버스 세로 크기 설정
+        const aspectRatio = bgState.originalSize.height / bgState.originalSize.width;
+        const newHeight = targetWidth * aspectRatio;
+        
+        // PIXI 캔버스 크기 조절 (스크린과 캔버스 모두 자동 업데이트)
+        canvasManager.resize(targetWidth, newHeight);
+        
+        // 배경 이미지를 0,0에서 시작하도록 설정하고 전체 이미지가 보이도록 스케일 조정
+        const originalWidth = bgState.originalSize.width;
+        const scale = targetWidth / originalWidth;
+        this.setBackgroundScale(scale);
+        
+        // 배경 이미지를 0,0 위치에 배치 (전체 이미지가 보이도록)
+        canvasManager.setBackgroundPosition(0, 0);
+      }
+    } else {
+      // 배경 이미지가 없으면 기본 높이로 설정하고 가로만 조절
+      // 배경 이미지가 있을 때는 배경 이미지 세로 크기에 맞추고, 없을 때는 기본 높이 사용
+      const defaultHeight = 600;
+      canvasManager.resize(targetWidth, defaultHeight);
+    }
+  }
+
   resetBackgroundImageTransform(): void {
     this.canvasManager.resetBackgroundTransform();
     this.queueBackgroundStateSync(true);
   }
 
   removeBackgroundImage(): void {
+    // 배경 이미지 제거 전에 현재 가로 크기 저장
+    const currentSize = this.canvasManager.getCanvasSize();
+    const currentWidth = currentSize.width;
+    const currentHeight = currentSize.height;
+    
+    console.log("🔴 [배경 제거] 제거 전 캔버스 크기:", { width: currentWidth, height: currentHeight });
+    
     this.canvasManager.removeBackgroundImage();
     this.queueBackgroundStateSync(true);
+    
+    // 배경 이미지 제거 후 명시적으로 기본 높이로 리셋
+    // 배경 이미지가 없을 때는 기본 높이(600)를 사용
+    const defaultHeight = 600;
+    console.log("🔴 [배경 제거] 리사이즈 호출:", { width: currentWidth, height: defaultHeight });
+    this.canvasManager.resize(currentWidth, defaultHeight);
+    
+    // 리사이즈 후 크기 확인
+    setTimeout(() => {
+      const afterSize = this.canvasManager.getCanvasSize();
+      console.log("🔴 [배경 제거] 제거 후 캔버스 크기:", afterSize);
+    }, 100);
   }
 
   hasBackgroundImage(): boolean {
