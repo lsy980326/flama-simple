@@ -23,6 +23,7 @@ export interface RealTimeDrawingConfig {
 
 export class RealTimeDrawingManager {
   private yjsManager: YjsDrawingManager;
+  private thumbnailUpdateTimer: ReturnType<typeof setTimeout> | null = null; // 썸네일 갱신 타이머
   private webrtcManager: WebRTCDataChannelManager;
   private awarenessManager: AwarenessManager;
   private canvasManager: CanvasManager;
@@ -35,6 +36,25 @@ export class RealTimeDrawingManager {
   private backgroundUpdateTimer: ReturnType<typeof setTimeout> | null = null;
   private onObjectsChange?: (objects: CanvasObject[]) => void;
   private scrollContainerRef: React.RefObject<HTMLDivElement | null> | null = null;
+  
+  // 썸네일 자동 갱신을 위한 debounce 메서드
+  private scheduleThumbnailUpdate(): void {
+    // 기존 타이머 취소
+    if (this.thumbnailUpdateTimer) {
+      clearTimeout(this.thumbnailUpdateTimer);
+    }
+    
+    // 2초 후 썸네일 갱신 이벤트 발생
+    this.thumbnailUpdateTimer = setTimeout(() => {
+      const scrollContainer = this.scrollContainerRef?.current;
+      if (scrollContainer) {
+        window.dispatchEvent(new CustomEvent('canvas-content-updated', { 
+          detail: { manager: this, container: scrollContainer } 
+        }));
+      }
+      this.thumbnailUpdateTimer = null;
+    }, 2000); // 2초 대기
+  }
 
   // 콜백 함수들
   private onDrawingUpdate?: (operations: DrawingOperation[]) => void;
@@ -113,6 +133,8 @@ export class RealTimeDrawingManager {
 
     this.canvasManager.setOnDrawEnd(() => {
       this.endDrawing();
+      // 그리기 완료 후 썸네일 갱신 예약
+      this.scheduleThumbnailUpdate();
     });
 
     this.canvasManager.setOnTextInput((x, y, text) => {
@@ -127,6 +149,8 @@ export class RealTimeDrawingManager {
         color,
       });
       this.canvasManager.addTextObject(id, x, y, text, fontSize, color);
+      // 텍스트 입력 완료 후 썸네일 갱신 예약
+      this.scheduleThumbnailUpdate();
     });
 
     this.canvasManager.setOnShapeComplete((shape) => {
@@ -152,16 +176,22 @@ export class RealTimeDrawingManager {
         brushSize,
         color
       );
+      // 도형 완성 후 썸네일 갱신 예약
+      this.scheduleThumbnailUpdate();
     });
 
     this.canvasManager.setOnObjectMoved((id, x, y) => {
       this.yjsManager.updateObject(id, { x, y });
       this.onObjectsChange?.(this.yjsManager.getAllObjects());
+      // 객체 이동 완료 후 썸네일 갱신 예약
+      this.scheduleThumbnailUpdate();
     });
 
     this.canvasManager.setOnObjectTransformed((id, updates) => {
       this.yjsManager.updateObject(id, updates);
       this.onObjectsChange?.(this.yjsManager.getAllObjects());
+      // 객체 변환 완료 후 썸네일 갱신 예약
+      this.scheduleThumbnailUpdate();
     });
 
       this.isInitialized = true;
@@ -173,6 +203,17 @@ export class RealTimeDrawingManager {
         this.pendingOperations = [];
         this.handleDrawingOperations(ops);
       }
+
+      // 초기화 완료 후 렌더링 완료를 보장하기 위해 약간의 지연 후 이벤트 발생
+      setTimeout(() => {
+        // 캔버스 초기화 완료 이벤트 발생 (미리보기 자동 표시용)
+        const scrollContainer = this.scrollContainerRef?.current;
+        if (scrollContainer) {
+          window.dispatchEvent(new CustomEvent('canvas-initialized', { 
+            detail: { manager: this, container: scrollContainer } 
+          }));
+        }
+      }, 300);
     } catch (error) {
       console.error("초기화 실패:", error);
       throw error;
@@ -421,10 +462,11 @@ export class RealTimeDrawingManager {
         await this.canvasManager.loadImageFromDataUrl(state.dataUrl);
       }
 
+      // 배경 이미지는 항상 (0, 0) 위치로 고정 (저장된 x, y 값 무시)
       this.canvasManager.setBackgroundTransform(
         {
-          x: state.x,
-          y: state.y,
+          x: 0,
+          y: 0,
           scale: state.scale,
         },
         { notify: true }
@@ -603,6 +645,8 @@ export class RealTimeDrawingManager {
   async loadBackgroundImage(file: File, maxWidth?: number): Promise<void> {
     await this.canvasManager.loadImageFromFile(file, maxWidth);
     this.queueBackgroundStateSync(true);
+    // 배경 이미지 로드 완료 후 썸네일 갱신 예약
+    this.scheduleThumbnailUpdate();
   }
 
   /**
@@ -628,25 +672,10 @@ export class RealTimeDrawingManager {
       const viewportX = scrollContainer.scrollLeft + scrollContainer.clientWidth / 2;
       const viewportY = scrollContainer.scrollTop + scrollContainer.clientHeight / 2;
       
-      console.log("🔵 [RealTimeDrawingManager] 뷰포트 중앙 계산:", {
-        scrollLeft: scrollContainer.scrollLeft,
-        scrollTop: scrollContainer.scrollTop,
-        clientWidth: scrollContainer.clientWidth,
-        clientHeight: scrollContainer.clientHeight,
-        viewportX,
-        viewportY,
-      });
-      
       return { x: viewportX, y: viewportY };
     }
     
     // 스크롤 컨테이너가 없으면 캔버스 중앙 반환
-    console.log("🔵 [RealTimeDrawingManager] 스크롤 컨테이너 없음, 캔버스 중앙 사용:", {
-      canvasWidth,
-      canvasHeight,
-      centerX: canvasWidth / 2,
-      centerY: canvasHeight / 2,
-    });
     
     return { x: canvasWidth / 2, y: canvasHeight / 2 };
   }
@@ -675,13 +704,11 @@ export class RealTimeDrawingManager {
       // 명시적으로 뷰포트 좌표가 제공된 경우
       centerX = viewportX;
       centerY = viewportY;
-      console.log("🔵 [RealTimeDrawingManager] 제공된 뷰포트 좌표 사용:", { centerX, centerY });
     } else {
       // 뷰포트 좌표가 없으면 현재 뷰포트 중앙 자동 계산
       const viewportCenter = this.getCurrentViewportCenter();
       centerX = viewportCenter.x;
       centerY = viewportCenter.y;
-      console.log("🔵 [RealTimeDrawingManager] 자동 계산된 뷰포트 좌표:", { centerX, centerY });
     }
 
     const id = this.yjsManager.addObject({
@@ -708,6 +735,8 @@ export class RealTimeDrawingManager {
     
     // 렌더링 완료 후 콜백 호출
     this.onObjectsChange?.(this.yjsManager.getAllObjects());
+    // 이미지 추가 완료 후 썸네일 갱신 예약
+    this.scheduleThumbnailUpdate();
   }
 
   removeSelectedObject(): boolean {
@@ -742,10 +771,10 @@ export class RealTimeDrawingManager {
    * 캔버스 가로 크기를 조절합니다.
    * 배경 이미지가 있는 경우 비율에 맞춰 높이도 자동 조절하고, 배경 이미지를 0,0에 배치합니다.
    * 배경 이미지가 없는 경우 가로 크기만 조절하고 세로는 현재 크기를 유지합니다.
-   * @param width 캔버스 가로 크기 (픽셀) 또는 "default" (기본값: 800)
-   * @param defaultWidth 기본 가로 크기 (width가 "default"일 때 사용, 기본값: 800)
+   * @param width 캔버스 가로 크기 (픽셀) 또는 "default" (기본값: 690)
+   * @param defaultWidth 기본 가로 크기 (width가 "default"일 때 사용, 기본값: 690)
    */
-  setCanvasWidth(width: number | "default", defaultWidth: number = 800): void {
+  setCanvasWidth(width: number | "default", defaultWidth: number = 690): void {
     const targetWidth = width === "default" ? defaultWidth : width;
     const canvasManager = this.canvasManager;
     
@@ -786,22 +815,13 @@ export class RealTimeDrawingManager {
     const currentWidth = currentSize.width;
     const currentHeight = currentSize.height;
     
-    console.log("🔴 [배경 제거] 제거 전 캔버스 크기:", { width: currentWidth, height: currentHeight });
-    
     this.canvasManager.removeBackgroundImage();
     this.queueBackgroundStateSync(true);
     
     // 배경 이미지 제거 후 명시적으로 기본 높이로 리셋
     // 배경 이미지가 없을 때는 기본 높이(600)를 사용
     const defaultHeight = 600;
-    console.log("🔴 [배경 제거] 리사이즈 호출:", { width: currentWidth, height: defaultHeight });
     this.canvasManager.resize(currentWidth, defaultHeight);
-    
-    // 리사이즈 후 크기 확인
-    setTimeout(() => {
-      const afterSize = this.canvasManager.getCanvasSize();
-      console.log("🔴 [배경 제거] 제거 후 캔버스 크기:", afterSize);
-    }, 100);
   }
 
   hasBackgroundImage(): boolean {
