@@ -40,6 +40,10 @@ export interface DrawingData {
   pressure?: number;
   color?: string;
   brushSize?: number;
+  timestamp?: number; // 타임스탬프 (점과 선 구분용)
+  strokeId?: string; // 획(stroke) ID - 같은 획인지 구분
+  strokeState?: "start" | "move" | "end"; // 획의 상태: 시작/이동/종료
+  middlePoints?: Array<{ x: number; y: number }>; // 부드러운 곡선 처리를 위한 미들포인트
 }
 
 export interface CanvasObject {

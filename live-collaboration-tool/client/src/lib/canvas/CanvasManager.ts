@@ -64,7 +64,7 @@ export class CanvasManager {
   private userIdToCursor: Map<string, PIXI.Graphics> = new Map();
   private isDrawing: boolean = false;
   private lastPoint: { x: number; y: number } | null = null;
-  private remoteUserIdToLastPoint: Map<string, { x: number; y: number }> =
+  private remoteUserIdToLastPoint: Map<string, { x: number; y: number; timestamp: number; strokeId?: string }> =
     new Map();
   private brushSize: number = 5;
   private brushColor: number = 0x000000;
@@ -671,7 +671,10 @@ export class CanvasManager {
 
     // 패딩 추가 (20px)
     const padding = 20;
-    const newWidth = Math.max(this.app.screen.width, maxX - minX + padding * 2);
+    // 배경 이미지가 있을 때는 가로 크기를 변경하지 않음 (배경 이미지 크기에 맞춰 이미 설정됨)
+    const newWidth = this.backgroundSprite 
+      ? this.app.screen.width // 배경 이미지가 있으면 가로 크기 유지
+      : Math.max(this.app.screen.width, maxX - minX + padding * 2);
     const newHeight = Math.max(
       this.app.screen.height,
       maxY - minY + padding * 2
@@ -882,28 +885,74 @@ export class CanvasManager {
             : data.color || this.brushColor;
 
         const prev = this.remoteUserIdToLastPoint.get(userId);
-        if (prev) {
-          // 떨어진 점들은 선으로 잇지 않도록 거리 임계값 적용
-          const dx = data.x - prev.x;
-          const dy = data.y - prev.y;
-          const distance = Math.hypot(dx, dy);
-          const size = data.brushSize || this.brushSize;
-          const connectThreshold = Math.max(10, size * 3);
-
-          if (distance <= connectThreshold) {
+        const currentTimestamp = data.timestamp || Date.now();
+        const strokeId = data.strokeId;
+        const strokeState = data.strokeState;
+        const middlePoints = data.middlePoints;
+        
+        // stroke 상태에 따라 처리
+        if (strokeState === "start") {
+          // 새로운 획 시작: 점으로 표시
+          try {
+            this.graphics.circle(
+              data.x,
+              data.y,
+              (data.brushSize || this.brushSize) / 2
+            );
+            this.graphics.fill(color);
+          } catch {}
+          
+          // 이전 점 정보 업데이트 (새로운 획 시작)
+          this.remoteUserIdToLastPoint.set(userId, {
+            x: data.x,
+            y: data.y,
+            timestamp: currentTimestamp,
+            strokeId: strokeId,
+          });
+        } else if (strokeState === "move" || strokeState === "end") {
+          // 획의 연속 또는 종료: 이전 점과 연결
+          if (prev && prev.strokeId === strokeId) {
+            // 같은 획이면 선으로 연결
             try {
               this.graphics.setStrokeStyle({
                 width: data.brushSize || this.brushSize,
                 color,
               });
-              this.graphics.moveTo(prev.x, prev.y);
-              this.graphics.lineTo(data.x, data.y);
+              
+              // 미들포인트가 있으면 부드러운 곡선 처리
+              // 성능 최적화: 미들포인트가 너무 많으면 제한
+              const maxMiddlePoints = 20; // 최대 20개의 미들포인트만 사용
+              const effectiveMiddlePoints = middlePoints && middlePoints.length > 0
+                ? middlePoints.slice(0, maxMiddlePoints)
+                : undefined;
+              
+              if (effectiveMiddlePoints && effectiveMiddlePoints.length > 0) {
+                // 이전 점에서 시작
+                this.graphics.moveTo(prev.x, prev.y);
+                
+                // 미들포인트들을 순차적으로 연결
+                effectiveMiddlePoints.forEach((point) => {
+                  this.graphics.lineTo(point.x, point.y);
+                });
+                
+                // 현재 점까지 연결
+                this.graphics.lineTo(data.x, data.y);
+              } else {
+                // 미들포인트가 없으면 직선으로 연결
+                this.graphics.moveTo(prev.x, prev.y);
+                this.graphics.lineTo(data.x, data.y);
+              }
+              
               this.graphics.stroke();
+              
+              // 선 끝에 원을 그려서 부드럽게 연결
+              this.graphics.circle(data.x, data.y, (data.brushSize || this.brushSize) / 2);
+              this.graphics.fill(color);
             } catch (error) {
               console.error("원격 선 연결 중 오류:", error);
             }
           } else {
-            // 거리가 멀면 새로운 스트로크 시작(점)
+            // 다른 획이거나 이전 점이 없으면 점으로 표시
             try {
               this.graphics.circle(
                 data.x,
@@ -913,19 +962,65 @@ export class CanvasManager {
               this.graphics.fill(color);
             } catch {}
           }
+          
+          // 이전 점 정보 업데이트
+          this.remoteUserIdToLastPoint.set(userId, {
+            x: data.x,
+            y: data.y,
+            timestamp: currentTimestamp,
+            strokeId: strokeId,
+          });
+          
+          // 획 종료 시 경로 초기화
+          if (strokeState === "end") {
+            this.remoteUserIdToLastPoint.delete(userId);
+          }
         } else {
-          // 첫 포인트는 점으로 시작
-          try {
-            this.graphics.circle(
-              data.x,
-              data.y,
-              (data.brushSize || this.brushSize) / 2
-            );
-            this.graphics.fill(color);
-          } catch {}
+          // strokeState가 없는 경우 (하위 호환성): 기존 로직 사용
+          if (prev) {
+            const timeDelta = currentTimestamp - prev.timestamp;
+            const POINT_CLICK_THRESHOLD_MS = 2000;
+            
+            if (timeDelta > POINT_CLICK_THRESHOLD_MS) {
+              try {
+                this.graphics.circle(
+                  data.x,
+                  data.y,
+                  (data.brushSize || this.brushSize) / 2
+                );
+                this.graphics.fill(color);
+              } catch {}
+            } else {
+              try {
+                this.graphics.setStrokeStyle({
+                  width: data.brushSize || this.brushSize,
+                  color,
+                });
+                this.graphics.moveTo(prev.x, prev.y);
+                this.graphics.lineTo(data.x, data.y);
+                this.graphics.stroke();
+              } catch (error) {
+                console.error("원격 선 연결 중 오류:", error);
+              }
+            }
+          } else {
+            try {
+              this.graphics.circle(
+                data.x,
+                data.y,
+                (data.brushSize || this.brushSize) / 2
+              );
+              this.graphics.fill(color);
+            } catch {}
+          }
+          
+          this.remoteUserIdToLastPoint.set(userId, {
+            x: data.x,
+            y: data.y,
+            timestamp: currentTimestamp,
+            strokeId: strokeId,
+          });
         }
-
-        this.remoteUserIdToLastPoint.set(userId, { x: data.x, y: data.y });
         break;
       }
       case "clear":

@@ -21,6 +21,9 @@ export interface DrawingOperation {
   brushSize?: number;
   userId: string;
   timestamp: number;
+  strokeId?: string; // 획(stroke) ID
+  strokeState?: "start" | "move" | "end"; // 획의 상태
+  middlePoints?: Array<{ x: number; y: number }>; // 미들포인트
 }
 
 export interface BackgroundState {
@@ -68,6 +71,7 @@ export class YjsDrawingManager {
   private currentUser: User;
   private currentBrushSize: number = 5;
   private currentColor: string = "#000000";
+  private currentStrokeId: string | null = null; // 현재 획 ID
   private onDrawingUpdate?: (operations: DrawingOperation[]) => void;
   private onAwarenessUpdate?: (states: Map<string, AwarenessState>) => void;
   private onObjectsUpdate?: (objects: CanvasObject[]) => void;
@@ -256,7 +260,7 @@ export class YjsDrawingManager {
     });
   }
 
-  // 그리기 작업 추가
+  // 그리기 작업 추가 (public으로 노출하여 외부에서 직접 호출 가능)
   addDrawingOperation(
     operation: Omit<DrawingOperation, "id" | "timestamp">
   ): void {
@@ -279,6 +283,9 @@ export class YjsDrawingManager {
   ): void {
     this.currentBrushSize = brushSize;
     this.currentColor = color;
+    // 새로운 획 ID 생성
+    this.currentStrokeId = this.generateId();
+    
     this.addDrawingOperation({
       type: "draw",
       x,
@@ -286,6 +293,8 @@ export class YjsDrawingManager {
       brushSize: brushSize,
       color: color,
       userId: this.currentUser.id,
+      strokeId: this.currentStrokeId,
+      strokeState: "start",
     });
 
     this.updateAwareness({
@@ -295,7 +304,12 @@ export class YjsDrawingManager {
   }
 
   // 그리기 계속
-  continueDrawing(x: number, y: number): void {
+  continueDrawing(x: number, y: number, middlePoints?: Array<{ x: number; y: number }>): void {
+    // strokeId가 없으면 새로 생성 (예외 상황 대응)
+    if (!this.currentStrokeId) {
+      this.currentStrokeId = this.generateId();
+    }
+    
     this.addDrawingOperation({
       type: "draw",
       x,
@@ -303,6 +317,9 @@ export class YjsDrawingManager {
       brushSize: this.currentBrushSize,
       color: this.currentColor,
       userId: this.currentUser.id,
+      strokeId: this.currentStrokeId,
+      strokeState: "move",
+      middlePoints: middlePoints,
     });
 
     this.updateAwareness({
@@ -310,8 +327,16 @@ export class YjsDrawingManager {
     });
   }
 
+  // 현재 strokeId 가져오기
+  getCurrentStrokeId(): string | null {
+    return this.currentStrokeId;
+  }
+
   // 그리기 종료
   endDrawing(): void {
+    // strokeId 초기화
+    this.currentStrokeId = null;
+    
     this.updateAwareness({
       isDrawing: false,
       cursor: null,

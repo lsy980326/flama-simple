@@ -37,14 +37,42 @@ export class RealTimeDrawingManager {
   private onObjectsChange?: (objects: CanvasObject[]) => void;
   private scrollContainerRef: React.RefObject<HTMLDivElement | null> | null = null;
   
-  // 썸네일 자동 갱신을 위한 debounce 메서드
+  // 성능 최적화: continueDrawing throttle
+  private continueDrawingThrottleTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastContinueDrawingTime: number = 0;
+  private lastContinueDrawingPoint: { x: number; y: number; time: number } | null = null;
+  private pendingContinueDrawing: { x: number; y: number } | null = null;
+  private readonly CONTINUE_DRAWING_THROTTLE_MS = 8; // ~120fps (8ms) - 빠른 움직임 대응
+  private readonly FAST_MOVEMENT_THRESHOLD_PX = 50; // 빠른 움직임 임계값 (픽셀)
+  private readonly FAST_MOVEMENT_THROTTLE_MS = 4; // 빠른 움직임 시 throttle (4ms, ~250fps)
+  
+  // 미들포인트 수집 (부드러운 곡선 처리)
+  private middlePointsBuffer: Array<{ x: number; y: number }> = [];
+  private lastSentPoint: { x: number; y: number } | null = null;
+  
+  // 원격 그리기 데이터 버퍼링 (순서 보장)
+  private remoteDrawingBuffer: Map<string, DrawingOperation[]> = new Map();
+  private remoteDrawingBufferTimer: ReturnType<typeof setTimeout> | null = null;
+  private remoteDrawingRafId: number | null = null; // requestAnimationFrame ID
+  private readonly REMOTE_DRAWING_BUFFER_MS = 16; // 16ms 버퍼링 (~60fps)
+  private readonly REMOTE_DRAWING_BUFFER_MAX_SIZE = 50; // 버퍼 최대 크기 (성능 최적화)
+  
+  // 마지막 작업 시간 추적 (썸네일 갱신 최적화)
+  private lastActivityTime: number = Date.now();
+  private readonly THUMBNAIL_UPDATE_IDLE_MS = 5000; // 5초 동안 작업이 없을 때 갱신
+  
+  // 썸네일 자동 갱신을 위한 메서드 (작업이 없을 때만 갱신)
   private scheduleThumbnailUpdate(): void {
+    // 마지막 작업 시간 업데이트
+    this.lastActivityTime = Date.now();
+    
     // 기존 타이머 취소
     if (this.thumbnailUpdateTimer) {
       clearTimeout(this.thumbnailUpdateTimer);
     }
     
-    // 2초 후 썸네일 갱신 이벤트 발생
+    // 5초 동안 작업이 없을 때 썸네일 갱신
+    // 작업이 발생하면 타이머가 리셋되므로, 타이머가 만료되면 5초 동안 작업이 없었다는 의미
     this.thumbnailUpdateTimer = setTimeout(() => {
       const scrollContainer = this.scrollContainerRef?.current;
       if (scrollContainer) {
@@ -53,7 +81,7 @@ export class RealTimeDrawingManager {
         }));
       }
       this.thumbnailUpdateTimer = null;
-    }, 2000); // 2초 대기
+    }, this.THUMBNAIL_UPDATE_IDLE_MS); // 5초 대기
   }
 
   // 콜백 함수들
@@ -269,7 +297,7 @@ export class RealTimeDrawingManager {
     });
   }
 
-  // 그리기 작업 처리
+  // 그리기 작업 처리 (버퍼링 및 순서 보장)
   private handleDrawingOperations(operations: DrawingOperation[]): void {
     if (!this.canvasManager.isReady()) {
       // 캔버스 준비 전이면 큐에 저장 후 나중에 처리
@@ -277,19 +305,116 @@ export class RealTimeDrawingManager {
       return;
     }
 
+    // 원격 사용자의 그리기 작업을 버퍼에 추가
+    let hasFastMovement = false;
     operations.forEach((operation) => {
       if (operation.userId !== this.config.user.id) {
-        // 다른 사용자의 그리기 작업을 선으로 연결하여 적용
-        this.canvasManager.applyRemoteDrawingData(operation.userId, {
+        if (!this.remoteDrawingBuffer.has(operation.userId)) {
+          this.remoteDrawingBuffer.set(operation.userId, []);
+        }
+        const buffer = this.remoteDrawingBuffer.get(operation.userId)!;
+        
+        // 버퍼 크기 제한 (무한 증가 방지)
+        if (buffer.length >= this.REMOTE_DRAWING_BUFFER_MAX_SIZE) {
+          // 버퍼가 가득 차면 즉시 처리
+          this.flushRemoteDrawingBuffer();
+          return;
+        }
+        
+        buffer.push(operation);
+        
+        // 빠른 움직임 감지: 이전 작업과의 거리/시간 비율 확인
+        if (buffer.length >= 2) {
+          const prev = buffer[buffer.length - 2];
+          const curr = buffer[buffer.length - 1];
+          const dx = curr.x - prev.x;
+          const dy = curr.y - prev.y;
+          const distance = Math.hypot(dx, dy);
+          const timeDelta = curr.timestamp - prev.timestamp;
+          
+          if (timeDelta > 0 && distance / timeDelta > 0.5) {
+            hasFastMovement = true;
+          }
+        }
+      }
+    });
+
+    // 빠른 움직임이 감지되거나 버퍼가 가득 차면 즉시 처리
+    if (hasFastMovement) {
+      if (this.remoteDrawingBufferTimer) {
+        clearTimeout(this.remoteDrawingBufferTimer);
+        this.remoteDrawingBufferTimer = null;
+      }
+      if (this.remoteDrawingRafId !== null) {
+        cancelAnimationFrame(this.remoteDrawingRafId);
+        this.remoteDrawingRafId = null;
+      }
+      // requestAnimationFrame으로 배치 처리하여 성능 최적화
+      this.scheduleRemoteDrawingFlush();
+      return;
+    }
+
+    // 버퍼링 타이머 설정 (이미 설정되어 있으면 재설정하지 않음)
+    if (!this.remoteDrawingBufferTimer && this.remoteDrawingRafId === null) {
+      this.remoteDrawingBufferTimer = setTimeout(() => {
+        this.remoteDrawingBufferTimer = null;
+        this.scheduleRemoteDrawingFlush();
+      }, this.REMOTE_DRAWING_BUFFER_MS);
+    }
+  }
+
+  // requestAnimationFrame으로 원격 그리기 데이터 처리 스케줄링 (성능 최적화)
+  private scheduleRemoteDrawingFlush(): void {
+    if (this.remoteDrawingRafId !== null) {
+      return; // 이미 스케줄링됨
+    }
+    
+    this.remoteDrawingRafId = requestAnimationFrame(() => {
+      this.remoteDrawingRafId = null;
+      this.flushRemoteDrawingBuffer();
+    });
+  }
+
+  // 버퍼링된 원격 그리기 데이터를 순서대로 처리
+  private flushRemoteDrawingBuffer(): void {
+    this.remoteDrawingBufferTimer = null;
+
+    let hasOperations = false;
+    
+    // 각 사용자별로 타임스탬프 순서대로 정렬하여 처리
+    this.remoteDrawingBuffer.forEach((operations, userId) => {
+      if (operations.length === 0) return;
+      
+      hasOperations = true;
+      
+      // 타임스탬프 순서대로 정렬
+      operations.sort((a, b) => a.timestamp - b.timestamp);
+
+      // 순서대로 적용 (타임스탬프, strokeId, strokeState, middlePoints 포함)
+      // 성능 최적화: 배치 처리 (한 프레임에 여러 작업 처리)
+      operations.forEach((operation) => {
+        this.canvasManager.applyRemoteDrawingData(userId, {
           type: operation.type,
           x: operation.x,
           y: operation.y,
           pressure: operation.pressure,
           color: operation.color,
           brushSize: operation.brushSize,
+          timestamp: operation.timestamp,
+          strokeId: operation.strokeId,
+          strokeState: operation.strokeState,
+          middlePoints: operation.middlePoints,
         });
-      }
+      });
+
+      // 버퍼 비우기
+      operations.length = 0;
     });
+    
+    // 원격 그리기 데이터 처리 후 썸네일 갱신 예약
+    if (hasOperations) {
+      this.scheduleThumbnailUpdate();
+    }
   }
 
   private handleCanvasBackgroundScaleChange(scale: number): void {
@@ -553,8 +678,15 @@ export class RealTimeDrawingManager {
     brushSize: number = 5,
     color: string = "#000000"
   ): void {
+    // 미들포인트 버퍼 초기화
+    this.middlePointsBuffer = [];
+    this.lastSentPoint = { x, y };
+    
     this.yjsManager.startDrawing(x, y, brushSize, color);
     this.awarenessManager.updateCurrentUserDrawing(true);
+
+    // 현재 strokeId 가져오기 (null을 undefined로 변환)
+    const strokeId = this.yjsManager.getCurrentStrokeId() ?? undefined;
 
     // WebRTC로도 전송
     this.webrtcManager.broadcastMessage("drawing", {
@@ -564,12 +696,99 @@ export class RealTimeDrawingManager {
       brushSize,
       color,
       userId: this.config.user.id,
+      strokeId: strokeId,
+      strokeState: "start",
     });
   }
 
-  // 그리기 계속
+  // 그리기 계속 (throttle 적용, 빠른 움직임 감지, 미들포인트 수집)
   continueDrawing(x: number, y: number): void {
-    this.yjsManager.continueDrawing(x, y);
+    const now = Date.now();
+    
+    // 미들포인트 수집: 마지막 전송된 점과 현재 점 사이의 중간점들을 버퍼에 저장
+    // 성능 최적화: 미들포인트 생성 제한 (너무 많은 미들포인트 방지)
+    if (this.lastSentPoint) {
+      const dx = x - this.lastSentPoint.x;
+      const dy = y - this.lastSentPoint.y;
+      const distance = Math.hypot(dx, dy);
+      
+      // 거리가 충분히 크면 중간점들을 생성 (부드러운 곡선 처리)
+      // 성능 최적화: 최대 20개의 미들포인트만 생성
+      if (distance > 20) {
+        const maxSteps = 20; // 최대 20단계
+        const stepSize = Math.max(distance / maxSteps, 20); // 최소 20px 간격
+        const steps = Math.min(Math.ceil(distance / stepSize), maxSteps);
+        
+        for (let i = 1; i < steps; i++) {
+          const t = i / steps;
+          this.middlePointsBuffer.push({
+            x: this.lastSentPoint.x + dx * t,
+            y: this.lastSentPoint.y + dy * t,
+          });
+        }
+      }
+    }
+    
+    this.pendingContinueDrawing = { x, y };
+
+    // 빠른 움직임 감지
+    let isFastMovement = false;
+    let throttleMs = this.CONTINUE_DRAWING_THROTTLE_MS;
+    
+    if (this.lastContinueDrawingPoint) {
+      const dx = x - this.lastContinueDrawingPoint.x;
+      const dy = y - this.lastContinueDrawingPoint.y;
+      const distance = Math.hypot(dx, dy);
+      const timeDelta = now - this.lastContinueDrawingPoint.time;
+      
+      // 빠른 움직임: 거리가 크거나 시간 대비 거리가 큰 경우
+      if (distance > this.FAST_MOVEMENT_THRESHOLD_PX || (timeDelta > 0 && distance / timeDelta > 0.5)) {
+        isFastMovement = true;
+        throttleMs = this.FAST_MOVEMENT_THROTTLE_MS;
+      }
+    }
+
+    // throttle: 마지막 전송 후 일정 시간이 지나지 않았으면 대기
+    // 빠른 움직임이거나 throttle 시간이 지났으면 즉시 전송
+    if (!isFastMovement && now - this.lastContinueDrawingTime < throttleMs) {
+      // 기존 타이머가 있으면 취소하고 새로 설정
+      if (this.continueDrawingThrottleTimer) {
+        clearTimeout(this.continueDrawingThrottleTimer);
+      }
+      
+      // 남은 시간 후에 전송
+      const remainingTime = throttleMs - (now - this.lastContinueDrawingTime);
+      this.continueDrawingThrottleTimer = setTimeout(() => {
+        this.flushContinueDrawing();
+      }, remainingTime);
+      return;
+    }
+
+    // 즉시 전송 (빠른 움직임이거나 throttle 시간이 지난 경우)
+    this.flushContinueDrawing();
+  }
+
+  // 대기 중인 continueDrawing 전송
+  private flushContinueDrawing(): void {
+    if (!this.pendingContinueDrawing) return;
+
+    const { x, y } = this.pendingContinueDrawing;
+    const now = Date.now();
+    this.pendingContinueDrawing = null;
+    this.lastContinueDrawingTime = now;
+    this.lastContinueDrawingPoint = { x, y, time: now };
+
+    // 미들포인트 복사 (전송 후 버퍼 초기화)
+    const middlePoints = this.middlePointsBuffer.length > 0 
+      ? [...this.middlePointsBuffer] 
+      : undefined;
+    this.middlePointsBuffer = [];
+    this.lastSentPoint = { x, y };
+
+    this.yjsManager.continueDrawing(x, y, middlePoints);
+
+    // 현재 strokeId 가져오기 (null을 undefined로 변환)
+    const strokeId = this.yjsManager.getCurrentStrokeId() ?? undefined;
 
     // WebRTC로도 전송
     this.webrtcManager.broadcastMessage("drawing", {
@@ -580,11 +799,60 @@ export class RealTimeDrawingManager {
       color:
         "#" + this.canvasManager.getBrushColor().toString(16).padStart(6, "0"),
       userId: this.config.user.id,
+      strokeId: strokeId,
+      strokeState: "move",
+      middlePoints: middlePoints,
     });
   }
 
   // 그리기 종료
   endDrawing(): void {
+    // 마지막 대기 중인 점이 있으면 먼저 전송
+    if (this.pendingContinueDrawing) {
+      this.flushContinueDrawing();
+    }
+    
+    // 마지막 점을 end 상태로 전송
+    if (this.lastSentPoint) {
+      const middlePoints = this.middlePointsBuffer.length > 0 
+        ? [...this.middlePointsBuffer] 
+        : undefined;
+      
+      // 현재 strokeId 가져오기 (null을 undefined로 변환)
+      const strokeId = this.yjsManager.getCurrentStrokeId() ?? undefined;
+      
+      // end 상태로 마지막 점 전송
+      this.yjsManager.addDrawingOperation({
+        type: "draw",
+        x: this.lastSentPoint.x,
+        y: this.lastSentPoint.y,
+        brushSize: this.canvasManager.getBrushSize(),
+        color: "#" + this.canvasManager.getBrushColor().toString(16).padStart(6, "0"),
+        userId: this.config.user.id,
+        strokeId: strokeId,
+        strokeState: "end",
+        middlePoints: middlePoints,
+      });
+      
+      // WebRTC로도 전송
+      this.webrtcManager.broadcastMessage("drawing", {
+        type: "draw",
+        x: this.lastSentPoint.x,
+        y: this.lastSentPoint.y,
+        brushSize: this.canvasManager.getBrushSize(),
+        color: "#" + this.canvasManager.getBrushColor().toString(16).padStart(6, "0"),
+        userId: this.config.user.id,
+        strokeId: strokeId,
+        strokeState: "end",
+        middlePoints: middlePoints,
+      });
+    }
+    
+    // 버퍼 초기화
+    this.middlePointsBuffer = [];
+    this.lastSentPoint = null;
+    this.pendingContinueDrawing = null;
+    
     this.yjsManager.endDrawing();
     this.awarenessManager.updateCurrentUserDrawing(false);
   }
@@ -680,7 +948,7 @@ export class RealTimeDrawingManager {
     return { x: canvasWidth / 2, y: canvasHeight / 2 };
   }
 
-  async addImageFromFile(file: File, viewportX?: number, viewportY?: number, maxWidth?: number): Promise<void> {
+  async addImageFromFile(file: File, viewportX?: number, viewportY?: number, maxWidth?: number, maxHeight?: number): Promise<void> {
     if (!this.canvasManager.isReady()) {
       try {
         await this.canvasManager.waitForInitialization();
@@ -693,8 +961,18 @@ export class RealTimeDrawingManager {
     const dataUrl = await this.readFileAsDataUrl(file);
     const { width: originalWidth, height: originalHeight, image } = await this.getImageInfo(dataUrl);
     
-    // 가로 크기 제한 적용 (원본 이미지 유지, 스케일만 조절)
-    // finalWidth, finalHeight는 사용하지 않지만 스케일 계산을 위해 유지
+    // 가로 및 세로 크기 제한 적용 (원본 이미지 유지, 스케일만 조절)
+    // 가로와 세로 중 더 작은 제한을 적용하여 비율 유지
+    let scale = 1;
+    if (maxWidth || maxHeight) {
+      const scaleX = maxWidth && originalWidth > maxWidth ? maxWidth / originalWidth : Infinity;
+      const scaleY = maxHeight && originalHeight > maxHeight ? maxHeight / originalHeight : Infinity;
+      // 더 작은 스케일을 선택하여 가로와 세로 모두 제한 내에 맞춤
+      scale = Math.min(scaleX, scaleY);
+      if (scale === Infinity) {
+        scale = 1;
+      }
+    }
     
     // 뷰포트 좌표가 제공되면 사용, 없으면 현재 뷰포트 중앙 계산
     let centerX: number;
@@ -718,7 +996,7 @@ export class RealTimeDrawingManager {
       dataUrl,
       width: originalWidth, // 원본 크기 저장
       height: originalHeight, // 원본 크기 저장
-      scale: maxWidth && originalWidth > maxWidth ? maxWidth / originalWidth : 1, // 스케일 계산
+      scale, // 스케일 계산
     });
 
     // 이미지 객체 추가 (원본 크기 사용, 스케일로 크기 조절)
@@ -729,7 +1007,7 @@ export class RealTimeDrawingManager {
       centerY,
       originalWidth, // 원본 크기
       originalHeight, // 원본 크기
-      maxWidth && originalWidth > maxWidth ? maxWidth / originalWidth : 1, // 스케일
+      scale, // 스케일
       image
     );
     
@@ -987,6 +1265,37 @@ export class RealTimeDrawingManager {
   disconnect(): void {
     this.clearBackgroundUpdateTimer();
     this.pendingBackgroundState = null;
+    
+    // 타이머 정리
+    if (this.thumbnailUpdateTimer) {
+      clearTimeout(this.thumbnailUpdateTimer);
+      this.thumbnailUpdateTimer = null;
+    }
+    
+    if (this.continueDrawingThrottleTimer) {
+      clearTimeout(this.continueDrawingThrottleTimer);
+      this.continueDrawingThrottleTimer = null;
+    }
+    
+    if (this.remoteDrawingBufferTimer) {
+      clearTimeout(this.remoteDrawingBufferTimer);
+      this.remoteDrawingBufferTimer = null;
+    }
+    
+    if (this.remoteDrawingRafId !== null) {
+      cancelAnimationFrame(this.remoteDrawingRafId);
+      this.remoteDrawingRafId = null;
+    }
+    
+    // 대기 중인 continueDrawing 전송
+    if (this.pendingContinueDrawing) {
+      this.flushContinueDrawing();
+    }
+    
+    // 버퍼링된 원격 그리기 데이터 처리
+    this.flushRemoteDrawingBuffer();
+    this.remoteDrawingBuffer.clear();
+    
     try {
       if (this.yjsManager) {
         this.yjsManager.disconnect();

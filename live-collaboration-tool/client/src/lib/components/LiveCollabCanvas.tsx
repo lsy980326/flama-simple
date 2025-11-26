@@ -595,9 +595,24 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
         console.warn("🔵 [오버레이] 스크롤 컨테이너를 찾을 수 없음");
       }
 
-      // 가로 크기 제한 없음 (기본 동작)
+      // 캔버스 가로 크기를 가져와서 maxWidth로 설정
+      // 세로 크기를 넘지 않도록 제한
+      const canvasManager = manager.getCanvasManager();
+      let maxWidth: number | undefined;
+      let maxHeight: number | undefined;
+      
+      if (canvasManager) {
+        const size = canvasManager.getCanvasSize();
+        maxWidth = size.width; // 캔버스 가로 크기
+        maxHeight = size.height; // 캔버스 세로 크기
+      }
+      
+      // 오버레이 이미지 추가 시 캔버스 가로 크기에 맞춰 리사이즈
+      // 세로 크기를 넘지 않도록 제한
       for (const file of validFiles) {
-        await manager.addImageFromFile(file, viewportX, viewportY);
+        // maxWidth와 maxHeight를 전달하여 이미지 크기 제한
+        // 가로와 세로 중 더 작은 제한을 적용하여 비율 유지
+        await manager.addImageFromFile(file, viewportX, viewportY, maxWidth, maxHeight);
       }
       setHasOverlay(true);
     } catch (error) {
