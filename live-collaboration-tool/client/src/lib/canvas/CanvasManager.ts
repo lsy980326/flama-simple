@@ -1714,14 +1714,18 @@ export class CanvasManager {
       // WebGL 최대 텍스처 크기 확인
       const maxTextureSize = this.getMaxTextureSize();
 
+      // 전체 캔버스 크기 사용 (여백 제거하지 않음 - 배경 이미지 잘림 방지)
+      const fullCanvasWidth = this.app.screen.width;
+      const fullCanvasHeight = this.app.screen.height;
+      
       // 스케일 계산 (캔버스 전체의 비율 유지하면서 최대 크기 내에 맞춤)
-      const scaleX = maxWidth / contentWidth;
-      const scaleY = maxHeight / contentHeight;
+      const scaleX = maxWidth / fullCanvasWidth;
+      const scaleY = maxHeight / fullCanvasHeight;
       const scale = Math.min(scaleX, scaleY);
 
       // 썸네일 크기 (캔버스 전체를 포함하도록 정확히 계산)
-      const thumbnailWidth = Math.ceil(contentWidth * scale);
-      const thumbnailHeight = Math.ceil(contentHeight * scale);
+      const thumbnailWidth = Math.ceil(fullCanvasWidth * scale);
+      const thumbnailHeight = Math.ceil(fullCanvasHeight * scale);
 
       // 렌더링 강제 업데이트 (모든 내용이 렌더링되도록)
       this.app.renderer.render(this.app.stage);
@@ -1734,16 +1738,17 @@ export class CanvasManager {
       }
 
       // 캔버스가 WebGL 제한보다 크면 타일링 방식으로 처리
-      if (contentWidth > maxTextureSize || contentHeight > maxTextureSize) {
+      // 전체 캔버스를 그리기 위해 offset을 0으로 설정
+      if (fullCanvasWidth > maxTextureSize || fullCanvasHeight > maxTextureSize) {
         return this.createThumbnailByTiling(
           canvas,
-          contentWidth,
-          contentHeight,
+          fullCanvasWidth,
+          fullCanvasHeight,
           thumbnailWidth,
           thumbnailHeight,
           maxTextureSize,
-          contentMinX,
-          contentMinY
+          0, // offsetX: 전체 캔버스를 그리기 위해 0
+          0  // offsetY: 전체 캔버스를 그리기 위해 0
         );
       }
 
@@ -1760,21 +1765,7 @@ export class CanvasManager {
       // 고품질 스케일링
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = "high";
-      // 전체 캔버스를 썸네일로 변환 (좌표 변환을 간단하게 하기 위해)
-      // 전체 캔버스 크기로 썸네일 크기 재계산
-      const fullCanvasWidth = this.app.screen.width;
-      const fullCanvasHeight = this.app.screen.height;
-      const fullScaleX = maxWidth / fullCanvasWidth;
-      const fullScaleY = maxHeight / fullCanvasHeight;
-      const fullScale = Math.min(fullScaleX, fullScaleY);
-      const fullThumbnailWidth = Math.ceil(fullCanvasWidth * fullScale);
-      const fullThumbnailHeight = Math.ceil(fullCanvasHeight * fullScale);
-      
-      // 썸네일 캔버스 크기 조정
-      thumbnailCanvas.width = fullThumbnailWidth;
-      thumbnailCanvas.height = fullThumbnailHeight;
-      
-      // 전체 캔버스를 썸네일로 그리기
+      // 전체 캔버스를 썸네일로 그리기 (이미 계산된 thumbnailWidth, thumbnailHeight 사용)
       ctx.drawImage(
         canvas,
         0,
@@ -1783,8 +1774,8 @@ export class CanvasManager {
         fullCanvasHeight, // 소스 영역 (전체 캔버스)
         0,
         0,
-        fullThumbnailWidth,
-        fullThumbnailHeight // 타겟 영역
+        thumbnailWidth,
+        thumbnailHeight // 타겟 영역
       );
 
       const dataUrl = thumbnailCanvas.toDataURL("image/png");
@@ -2810,9 +2801,10 @@ export class CanvasManager {
   ): void {
     if (!this.backgroundSprite) return;
 
-    const { x, y, scale } = transform;
+    const { scale } = transform;
     this.backgroundScale = Math.min(Math.max(scale, 0.1), 5);
-    this.backgroundSprite.position.set(x, y);
+    // 배경 이미지는 항상 (0, 0) 위치에 고정 (여백 및 잘림 방지)
+    this.backgroundSprite.position.set(0, 0);
     this.backgroundSprite.scale.set(this.backgroundScale);
     this.updateTransformOverlay();
     if (options.notify) {
@@ -2834,8 +2826,8 @@ export class CanvasManager {
 
     return {
       dataUrl: this.backgroundDataUrl,
-      x: this.backgroundSprite.x,
-      y: this.backgroundSprite.y,
+      x: 0, // 배경 이미지는 항상 (0, 0) 위치 고정
+      y: 0, // 배경 이미지는 항상 (0, 0) 위치 고정
       scale: this.backgroundSprite.scale.x,
       originalSize: this.backgroundOriginalSize,
     };

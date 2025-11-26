@@ -519,7 +519,7 @@ export default function App() {
   const [customTransform, setCustomTransform] = React.useState(false);
   const [customTransformHotkey, setCustomTransformHotkey] =
     React.useState(false);
-  const [customCanvasWidth, setCustomCanvasWidth] = React.useState<number | "default">("default");
+  const [customCanvasWidth, setCustomCanvasWidth] = React.useState<number>(690);
   const customFileInputRef = React.useRef<HTMLInputElement>(null);
   const customOverlayInputRef = React.useRef<HTMLInputElement>(null);
   const customHasTransformTarget = React.useMemo(
@@ -939,18 +939,17 @@ export default function App() {
           <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <span>캔버스 가로 크기</span>
             <select
-              value={customCanvasWidth === "default" ? "default" : customCanvasWidth}
+              value={customCanvasWidth}
               onChange={(e) => {
-                const newWidth = e.target.value === "default" ? "default" : Number(e.target.value);
+                const newWidth = Number(e.target.value);
                 setCustomCanvasWidth(newWidth);
                 if (customManager) {
-                  customManager.setCanvasWidth(newWidth, 800);
+                  customManager.setCanvasWidth(newWidth, 690);
                 }
               }}
               disabled={!customManager}
               style={{ flex: 1, padding: "4px" }}
             >
-              <option value="default">기본 (800px)</option>
               {WEBTOON_WIDTH_OPTIONS.map((w) => (
                 <option key={w} value={w}>
                   {w}px
@@ -971,7 +970,7 @@ export default function App() {
           width={900}
           height={520}
           canvasWidth={customCanvasWidth}
-          defaultCanvasWidth={800}
+          defaultCanvasWidth={690}
           showToolbar={false}
           onReady={({ manager }) => {
             setCustomManager(manager);
@@ -980,7 +979,7 @@ export default function App() {
             manager.setBrushSize(customBrush);
             manager.setBrushColor(customColor);
             // 초기 캔버스 크기 설정
-            manager.setCanvasWidth(customCanvasWidth, 800);
+            manager.setCanvasWidth(customCanvasWidth, 690);
           }}
         />
       </Section>

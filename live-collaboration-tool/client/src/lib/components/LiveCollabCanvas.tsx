@@ -82,8 +82,8 @@ export interface LiveCollabCanvasProps {
   user: User;
   width?: number; // 초기 캔버스 가로 크기 (픽셀)
   height?: number; // 초기 캔버스 세로 크기 (픽셀)
-  canvasWidth?: number | "default"; // 캔버스 가로 크기 (690, 720, 740 또는 "default", 기본값: "default")
-  defaultCanvasWidth?: number; // canvasWidth가 "default"일 때 사용할 기본 크기 (기본값: 800)
+  canvasWidth?: number; // 캔버스 가로 크기 (690, 720, 740, 기본값: 690)
+  defaultCanvasWidth?: number; // 사용되지 않음 (하위 호환성을 위해 유지)
   webrtcConfig?: WebRTCConfig;
   showToolbar?: boolean;
   showThumbnail?: boolean; // 미리보기 네비게이션 표시 여부
@@ -98,8 +98,8 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
   user,
   width = 800,
   height = 600,
-  canvasWidth = "default",
-  defaultCanvasWidth = 800,
+  canvasWidth = 690,
+  defaultCanvasWidth = 690, // 사용되지 않음 (하위 호환성을 위해 유지)
   webrtcConfig = {
     iceServers: [
       { urls: "stun:stun.l.google.com:19302" },
@@ -130,7 +130,7 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
   >("brush");
   const [isTransformManual, setIsTransformManual] = React.useState(false);
   const [isTransformHotkey, setIsTransformHotkey] = React.useState(false);
-  const [currentCanvasWidth, setCurrentCanvasWidth] = React.useState<number | "default">(canvasWidth);
+  const [currentCanvasWidth, setCurrentCanvasWidth] = React.useState<number>(canvasWidth);
   const [canvasSize, setCanvasSize] = React.useState({ width: width, height: height });
   const hasTransformTarget = React.useMemo(
     () => hasBackground || hasOverlay,
@@ -255,7 +255,7 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
   // 캔버스 가로 크기 조절
   React.useEffect(() => {
     if (!manager) return;
-    manager.setCanvasWidth(currentCanvasWidth, defaultCanvasWidth);
+    manager.setCanvasWidth(currentCanvasWidth, 690); // 기본값 690 사용
     
     // 캔버스 크기 업데이트 (비동기로 처리하여 resize 완료 후 크기 가져오기)
     setTimeout(() => {
@@ -265,7 +265,7 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
         setCanvasSize(size);
       }
     }, 0);
-  }, [manager, currentCanvasWidth, defaultCanvasWidth]);
+  }, [manager, currentCanvasWidth]);
 
   // 스크롤 컨테이너 ref 업데이트 (컨테이너가 변경될 수 있음)
   // thumbnailContainer는 나중에 정의되므로, 여기서는 thumbnailContainerRef를 직접 사용
@@ -466,7 +466,7 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
       setBackgroundScale(Number(applied.toFixed(2)));
       
       // 배경 이미지 로드 후 현재 캔버스 가로 크기에 맞춰 조절
-      manager.setCanvasWidth(currentCanvasWidth, defaultCanvasWidth);
+      manager.setCanvasWidth(currentCanvasWidth, 690); // 기본값 690 사용
       
       // 캔버스 크기 업데이트
       setTimeout(() => {
@@ -688,6 +688,53 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
       setBackgroundScale(
         hasBg ? Number(manager.getBackgroundScale().toFixed(2)) : 1
       );
+      
+      // 캔버스 크기 업데이트 및 렌더링 완료 대기
+      const canvasManager = manager.getCanvasManager();
+      if (canvasManager) {
+        // 캔버스가 준비될 때까지 대기
+        await canvasManager.waitForInitialization();
+        
+        // 렌더링 강제 업데이트
+        const app = (canvasManager as any).app;
+        if (app && app.renderer && app.stage) {
+          app.renderer.render(app.stage);
+        }
+        
+        // 캔버스 크기 업데이트
+        const size = canvasManager.getCanvasSize();
+        setCanvasSize(size);
+        
+        // 큰 캔버스의 경우 추가 렌더링 대기
+        if (size.height > 10000) {
+          // 매우 큰 캔버스의 경우 추가 대기 시간
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          const app = (canvasManager as any).app;
+          if (app && app.renderer && app.stage) {
+            app.renderer.render(app.stage);
+          }
+        }
+      }
+      
+      // 미리보기 업데이트를 위해 canvas-activated 이벤트 발생
+      // 렌더링이 완전히 완료된 후 썸네일 생성
+      if (showThumbnail && manager) {
+        const container = thumbnailContainer?.current || internalThumbnailContainer.current;
+        if (container) {
+          // 렌더링 완료를 보장하기 위해 충분한 지연 (큰 캔버스의 경우 더 긴 대기)
+          const canvasManager = manager.getCanvasManager();
+          const size = canvasManager ? canvasManager.getCanvasSize() : { height: 0 };
+          const delay = size.height > 10000 ? 1500 : 500;
+          
+          setTimeout(() => {
+            (window as any).__activeCanvasManager = manager;
+            (window as any).__activeCanvasContainer = container;
+            window.dispatchEvent(new CustomEvent('canvas-activated', { 
+              detail: { manager, container } 
+            }));
+          }, delay);
+        }
+      }
     } catch (error) {
       console.error("캔버스 불러오기 실패:", error);
       alert("캔버스 불러오기에 실패했습니다.");
@@ -850,14 +897,13 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
           <div style={{ borderTop: "1px solid #ccc", paddingTop: 12 }}>
             <label style={{ fontSize: 12, marginBottom: 6 }}>캔버스 가로 크기</label>
             <select
-              value={currentCanvasWidth === "default" ? "default" : currentCanvasWidth}
+              value={currentCanvasWidth}
               onChange={(e) => {
-                const newWidth = e.target.value === "default" ? "default" : Number(e.target.value);
+                const newWidth = Number(e.target.value);
                 setCurrentCanvasWidth(newWidth);
               }}
               style={{ width: "100%", padding: "4px", fontSize: 12 }}
             >
-              <option value="default">기본 ({defaultCanvasWidth}px)</option>
               {WEBTOON_WIDTH_OPTIONS.map((w) => (
                 <option key={w} value={w}>
                   {w}px
