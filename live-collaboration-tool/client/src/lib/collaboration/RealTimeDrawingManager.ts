@@ -13,6 +13,10 @@ import {
 import { AwarenessManager, UserAwareness } from "./AwarenessManager";
 import { CanvasManager } from "../canvas/CanvasManager";
 import { User, WebRTCConfig } from "../types";
+import {
+  saveCanvasStateToIndexedDB,
+  loadCanvasStateFromIndexedDB,
+} from "../utils/canvasStorage";
 
 export interface RealTimeDrawingConfig {
   serverUrl: string;
@@ -29,6 +33,7 @@ export class RealTimeDrawingManager {
   private canvasManager: CanvasManager;
   private config: RealTimeDrawingConfig;
   private isInitialized: boolean = false;
+  private isImportingState: boolean = false; // IndexedDB에서 상태를 불러오는 중인지 플래그
   private pendingOperations: DrawingOperation[] = [];
   private isApplyingRemoteBackground: boolean = false;
   private backgroundScaleListener?: (scale: number) => void;
@@ -36,6 +41,7 @@ export class RealTimeDrawingManager {
   private backgroundUpdateTimer: ReturnType<typeof setTimeout> | null = null;
   private onObjectsChange?: (objects: CanvasObject[]) => void;
   private scrollContainerRef: React.RefObject<HTMLDivElement | null> | null = null;
+  private saveStateTimer: ReturnType<typeof setTimeout> | null = null; // 상태 저장 debounce 타이머
   
   // 성능 최적화: continueDrawing throttle
   private continueDrawingThrottleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -163,6 +169,8 @@ export class RealTimeDrawingManager {
       this.endDrawing();
       // 그리기 완료 후 썸네일 갱신 예약
       this.scheduleThumbnailUpdate();
+      // 그리기 완료 후 IndexedDB에 저장 (그리기 데이터 포함)
+      this.scheduleStateSave();
     });
 
     this.canvasManager.setOnTextInput((x, y, text) => {
@@ -222,6 +230,95 @@ export class RealTimeDrawingManager {
       this.scheduleThumbnailUpdate();
     });
 
+      // IndexedDB에서 저장된 상태 불러오기 (3시간 TTL 확인)
+      // 같은 roomId를 사용하는 여러 인스턴스가 있을 때, 첫 번째 인스턴스만 불러오고
+      // 나머지는 Y.js 동기화를 통해 자동으로 동기화되도록 함
+      try {
+        // Y.js 동기화 대기 (다른 인스턴스가 이미 불러왔을 수 있음)
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        
+        // Y.js에 이미 데이터가 있는지 확인
+        const existingOperations = this.yjsManager.getAllOperations();
+        const existingObjects = this.yjsManager.getAllObjects();
+        const existingBackground = this.yjsManager.getBackgroundState();
+        
+        // Y.js에 데이터가 없으면 IndexedDB에서 불러오기 (첫 번째 인스턴스만)
+        if (existingOperations.length === 0 && existingObjects.length === 0 && !existingBackground) {
+          const savedState = await loadCanvasStateFromIndexedDB(this.config.roomId);
+          if (savedState) {
+            const parsed = JSON.parse(savedState);
+            const drawingsCount = Array.isArray(parsed.drawings) ? parsed.drawings.length : 0;
+            const objectsCount = Array.isArray(parsed.objects) ? parsed.objects.length : 0;
+            const hasBackground = parsed.background && parsed.background.dataUrl ? true : false;
+            
+            console.log(`[IndexedDB 불러오기] roomId: ${this.config.roomId}, 그리기: ${drawingsCount}개, 객체: ${objectsCount}개, 배경: ${hasBackground ? '있음' : '없음'}`);
+            
+            // IndexedDB에서 불러온 상태를 Y.js에 import하고 렌더링
+            this.isImportingState = true;
+            await this.importCanvasState(savedState);
+            this.isImportingState = false;
+          } else {
+            console.log(`[IndexedDB 불러오기] roomId: ${this.config.roomId}, 저장된 상태 없음 (빈 상태로 시작)`);
+          }
+        } else {
+          // Y.js에 이미 데이터가 있으면 다른 인스턴스에서 이미 불러온 상태
+          // Y.js 이벤트를 통해 자동으로 동기화되지만, 초기 렌더링을 위해 직접 렌더링
+          console.log(`[IndexedDB 불러오기] roomId: ${this.config.roomId}, Y.js에 이미 데이터가 있음 (다른 인스턴스에서 불러옴)`);
+          
+          if (existingBackground) {
+            await this.applySharedBackgroundState(existingBackground);
+          }
+          
+          if (existingOperations.length > 0) {
+            // clear 작업 처리: 마지막 clear 이후의 작업만 사용
+            let processedOperations = existingOperations;
+            let lastClearIndex = -1;
+            for (let i = existingOperations.length - 1; i >= 0; i--) {
+              if (existingOperations[i].type === "clear") {
+                lastClearIndex = i;
+                break;
+              }
+            }
+            if (lastClearIndex >= 0) {
+              this.canvasManager.clear();
+              processedOperations = existingOperations.slice(lastClearIndex + 1);
+            }
+            
+            // 모든 작업 렌더링 (자신의 작업도 포함)
+            processedOperations.forEach((operation) => {
+              if (operation.type !== "clear") {
+                this.canvasManager.applyRemoteDrawingData(operation.userId, {
+                  type: operation.type,
+                  x: operation.x,
+                  y: operation.y,
+                  x2: operation.x2,
+                  y2: operation.y2,
+                  width: operation.width,
+                  height: operation.height,
+                  pressure: operation.pressure,
+                  color: operation.color,
+                  brushSize: operation.brushSize,
+                  timestamp: operation.timestamp,
+                  strokeId: operation.strokeId,
+                  strokeState: operation.strokeState,
+                  middlePoints: operation.middlePoints,
+                  tool: operation.tool,
+                  text: operation.text,
+                  fontSize: operation.fontSize,
+                });
+              }
+            });
+          }
+          
+          if (existingObjects.length > 0) {
+            await this.syncCanvasObjects(existingObjects);
+          }
+        }
+      } catch (error) {
+        console.warn("IndexedDB에서 상태 불러오기 실패 (빈 상태로 시작):", error);
+        this.isImportingState = false;
+      }
+
       this.isInitialized = true;
       console.log("실시간 그림 그리기 매니저 초기화 완료");
 
@@ -254,6 +351,8 @@ export class RealTimeDrawingManager {
     this.yjsManager.setOnDrawingUpdate((operations) => {
       this.handleDrawingOperations(operations);
       this.onDrawingUpdate?.(operations);
+      // 상태 변경 시 IndexedDB에 저장 (debounce)
+      this.scheduleStateSave();
     });
 
     this.yjsManager.setOnAwarenessUpdate((states) => {
@@ -290,10 +389,14 @@ export class RealTimeDrawingManager {
 
     this.yjsManager.setOnBackgroundStateUpdate((state) => {
       void this.applySharedBackgroundState(state);
+      // 상태 변경 시 IndexedDB에 저장 (debounce)
+      this.scheduleStateSave();
     });
 
     this.yjsManager.setOnObjectsUpdate((objects) => {
       void this.syncCanvasObjects(objects);
+      // 상태 변경 시 IndexedDB에 저장 (debounce)
+      this.scheduleStateSave();
     });
   }
 
@@ -302,6 +405,11 @@ export class RealTimeDrawingManager {
     if (!this.canvasManager.isReady()) {
       // 캔버스 준비 전이면 큐에 저장 후 나중에 처리
       this.pendingOperations.push(...operations);
+      return;
+    }
+
+    // IndexedDB에서 상태를 불러오는 중이면 무시 (중복 렌더링 방지)
+    if (this.isImportingState) {
       return;
     }
 
@@ -397,6 +505,10 @@ export class RealTimeDrawingManager {
           type: operation.type,
           x: operation.x,
           y: operation.y,
+          x2: operation.x2,
+          y2: operation.y2,
+          width: operation.width,
+          height: operation.height,
           pressure: operation.pressure,
           color: operation.color,
           brushSize: operation.brushSize,
@@ -404,6 +516,9 @@ export class RealTimeDrawingManager {
           strokeId: operation.strokeId,
           strokeState: operation.strokeState,
           middlePoints: operation.middlePoints,
+          tool: operation.tool,
+          text: operation.text,
+          fontSize: operation.fontSize,
         });
       });
 
@@ -872,8 +987,15 @@ export class RealTimeDrawingManager {
   }
 
   // 캔버스 지우기
-  clearCanvas(): void {
+  async clearCanvas(): Promise<void> {
     this.yjsManager.clearCanvas();
+    // IndexedDB에서도 삭제
+    try {
+      const { deleteCanvasStateFromIndexedDB } = await import("../utils/canvasStorage");
+      await deleteCanvasStateFromIndexedDB(this.config.roomId);
+    } catch (error) {
+      console.warn("IndexedDB에서 캔버스 상태 삭제 실패:", error);
+    }
     this.canvasManager.clear();
     
     // 모든 객체도 삭제
@@ -1091,7 +1213,6 @@ export class RealTimeDrawingManager {
     // 배경 이미지 제거 전에 현재 가로 크기 저장
     const currentSize = this.canvasManager.getCanvasSize();
     const currentWidth = currentSize.width;
-    const currentHeight = currentSize.height;
     
     this.canvasManager.removeBackgroundImage();
     this.queueBackgroundStateSync(true);
@@ -1148,17 +1269,7 @@ export class RealTimeDrawingManager {
 
   async importCanvasState(serialized: string): Promise<void> {
     try {
-      this.yjsManager.importState(serialized);
-      // 복원 후 캔버스 다시 그리기
-      const operations = this.yjsManager.getAllOperations();
-      if (operations.length > 0) {
-        this.handleDrawingOperations(operations);
-      }
-      // 배경 상태도 적용
-      const bgState = this.yjsManager.getBackgroundState();
-      if (bgState) {
-        await this.applySharedBackgroundState(bgState);
-      }
+      // 캔버스가 준비될 때까지 대기
       if (!this.canvasManager.isReady()) {
         try {
           await this.canvasManager.waitForInitialization();
@@ -1166,6 +1277,67 @@ export class RealTimeDrawingManager {
           console.error("캔버스 초기화 대기 중 오류:", error);
         }
       }
+
+      this.yjsManager.importState(serialized);
+      
+      // 배경 상태 먼저 적용 (배경이 먼저 그려져야 함)
+      const bgState = this.yjsManager.getBackgroundState();
+      if (bgState) {
+        await this.applySharedBackgroundState(bgState);
+      }
+      
+      // 복원 후 캔버스 다시 그리기 (자신이 그린 것도 포함)
+      const operations = this.yjsManager.getAllOperations();
+      
+      // clear 작업 처리: 마지막 clear 이후의 작업만 사용
+      let processedOperations = operations;
+      let lastClearIndex = -1;
+      for (let i = operations.length - 1; i >= 0; i--) {
+        if (operations[i].type === "clear") {
+          lastClearIndex = i;
+          break;
+        }
+      }
+      
+      if (lastClearIndex >= 0) {
+        // clear 작업이 있으면 먼저 캔버스 지우기
+        this.canvasManager.clear();
+        // clear 이후의 작업만 사용
+        processedOperations = operations.slice(lastClearIndex + 1);
+      }
+      
+      if (processedOperations.length > 0) {
+        // importCanvasState에서 불러온 데이터는 모든 작업을 직접 렌더링
+        // handleDrawingOperations는 원격 사용자만 처리하므로, 여기서는 직접 렌더링
+        processedOperations.forEach((operation) => {
+          // clear 타입은 이미 처리했으므로 건너뛰기
+          if (operation.type === "clear") {
+            return;
+          }
+          
+          // 모든 작업을 원격 그리기로 처리 (userId 체크 없이)
+          this.canvasManager.applyRemoteDrawingData(operation.userId, {
+            type: operation.type,
+            x: operation.x,
+            y: operation.y,
+            x2: operation.x2,
+            y2: operation.y2,
+            width: operation.width,
+            height: operation.height,
+            pressure: operation.pressure,
+            color: operation.color,
+            brushSize: operation.brushSize,
+            timestamp: operation.timestamp,
+            strokeId: operation.strokeId,
+            strokeState: operation.strokeState,
+            middlePoints: operation.middlePoints,
+            tool: operation.tool,
+            text: operation.text,
+            fontSize: operation.fontSize,
+          });
+        });
+      }
+      
       const objects = this.yjsManager.getAllObjects();
       await this.syncCanvasObjects(objects);
       this.onObjectsChange?.(objects);
@@ -1184,6 +1356,34 @@ export class RealTimeDrawingManager {
     a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  /**
+   * 상태를 IndexedDB에 저장 (debounce)
+   */
+  private scheduleStateSave(): void {
+    // 기존 타이머 취소
+    if (this.saveStateTimer) {
+      clearTimeout(this.saveStateTimer);
+    }
+    
+    // 2초 후에 저장 (debounce)
+    this.saveStateTimer = setTimeout(async () => {
+      try {
+        const state = this.exportCanvasState();
+        const parsed = JSON.parse(state);
+        const drawingsCount = Array.isArray(parsed.drawings) ? parsed.drawings.length : 0;
+        const objectsCount = Array.isArray(parsed.objects) ? parsed.objects.length : 0;
+        const hasBackground = parsed.background && parsed.background.dataUrl ? true : false;
+        
+        console.log(`[IndexedDB 저장] roomId: ${this.config.roomId}, 그리기: ${drawingsCount}개, 객체: ${objectsCount}개, 배경: ${hasBackground ? '있음' : '없음'}`);
+        
+        await saveCanvasStateToIndexedDB(this.config.roomId, state);
+      } catch (error) {
+        console.warn("IndexedDB에 상태 저장 실패:", error);
+      }
+      this.saveStateTimer = null;
+    }, 2000);
   }
 
   // 피어 연결 관리
