@@ -10,12 +10,16 @@ export { YjsDrawingManager } from "./collaboration/YjsDrawingManager";
 export { WebRTCDataChannelManager } from "./webrtc/WebRTCDataChannelManager";
 export { AwarenessManager } from "./collaboration/AwarenessManager";
 export { RealTimeDrawingManager } from "./collaboration/RealTimeDrawingManager";
+export { CanvasViewerManager } from "./collaboration/CanvasViewerManager";
 export { LiveCollabCanvas } from "./components/LiveCollabCanvas";
+export { CanvasViewer } from "./components/CanvasViewer";
+export { Canvas2DViewer } from "./canvas/Canvas2DViewer";
 export { CanvasThumbnailNavigator } from "./components/CanvasThumbnailNavigator";
 export {
   DocumentViewer,
   DefaultRenderHandle,
 } from "./components/DocumentViewer";
+export { DocumentViewerWithUpload } from "./components/DocumentViewerWithUpload";
 export {
   WebtoonViewer,
   WEBTOON_WIDTH_OPTIONS,
@@ -26,12 +30,8 @@ export { DocxAdapter } from "./documents/adapters/DocxAdapter";
 export { MeAdapter } from "./documents/adapters/MeAdapter";
 export { HwpAdapter } from "./documents/adapters/HwpAdapter";
 export { ImageAdapter } from "./documents/adapters/ImageAdapter";
-export {
-  MemoryStorageProvider,
-} from "./documents/storage/providers/MemoryStorageProvider";
-export {
-  IndexedDBStorageProvider,
-} from "./documents/storage/providers/IndexedDBStorageProvider";
+export { MemoryStorageProvider } from "./documents/storage/providers/MemoryStorageProvider";
+export { IndexedDBStorageProvider } from "./documents/storage/providers/IndexedDBStorageProvider";
 
 // 타입 정의
 export * from "./types";
@@ -48,6 +48,8 @@ export type {
 // 유틸리티
 export * from "./utils";
 export { CanvasCoordinateConverter } from "./utils/canvasCoordinateConverter";
+export { getWSEndpoint } from "./utils/websocket";
+export { createDefaultAdapterRegistry } from "./utils/documentAdapters";
 export type {
   CanvasSize,
   ThumbnailSize,
