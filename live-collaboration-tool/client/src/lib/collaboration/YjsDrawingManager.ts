@@ -405,6 +405,11 @@ export class YjsDrawingManager {
     return operations.sort((a, b) => a.timestamp - b.timestamp);
   }
 
+  // getAllDrawingOperations는 getAllOperations의 별칭 (일관성을 위해)
+  getAllDrawingOperations(): DrawingOperation[] {
+    return this.getAllOperations();
+  }
+
   addObject(obj: Omit<CanvasObject, "id" | "timestamp" | "userId">): string {
     const id = this.generateId();
     const fullObject: CanvasObject = {
