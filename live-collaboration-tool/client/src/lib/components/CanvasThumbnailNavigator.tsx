@@ -211,10 +211,19 @@ export const CanvasThumbnailNavigator: React.FC<CanvasThumbnailNavigatorProps> =
       const newManager = e.detail.manager;
       const newContainer = e.detail.container;
       
+      // propManager와 일치하는 경우에만 처리 (같은 브라우저의 manager만)
+      // propManager가 없으면 이 이벤트를 무시 (각 브라우저는 자신의 propManager를 가져야 함)
+      if (!propManager || propManager !== newManager) {
+        // 다른 브라우저의 이벤트는 조용히 무시 (로그 제거로 스팸 방지)
+        return;
+      }
+      
       // manager가 변경되었는지 확인
       const managerChanged = activeManager !== newManager;
       
       setActiveManager(newManager);
+      // activeContainerRef는 propManager와 일치하는 경우에만 업데이트
+      // (실제로는 propContainerRef를 사용하므로 참고용)
       setActiveContainerRef({ current: newContainer });
       
       // 캔버스 클릭 시 미리보기 표시
@@ -264,15 +273,17 @@ export const CanvasThumbnailNavigator: React.FC<CanvasThumbnailNavigatorProps> =
       const updatedManager = e.detail.manager;
       const updatedContainer = e.detail.container;
       
-      // 현재 활성화된 manager와 일치하는 경우에만 갱신
-      const currentManager = activeManager || propManager;
-      if (currentManager && currentManager === updatedManager && !isManuallyClosedRef.current) {
-        // 썸네일 갱신
-        setHasGeneratedThumbnail(false);
-        generateThumbnailOnce(updatedManager).catch(err => {
-          console.error("썸네일 갱신 실패:", err);
-        });
+      // propManager와 일치하는 경우에만 갱신 (같은 브라우저의 manager만)
+      // propManager가 없으면 이 이벤트를 무시 (각 브라우저는 자신의 propManager를 가져야 함)
+      if (!propManager || propManager !== updatedManager || isManuallyClosedRef.current) {
+        return;
       }
+      
+      // 썸네일 갱신
+      setHasGeneratedThumbnail(false);
+      generateThumbnailOnce(updatedManager).catch(err => {
+        console.error("썸네일 갱신 실패:", err);
+      });
     };
 
     window.addEventListener('canvas-activated', handleCanvasActivated as EventListener);
@@ -303,7 +314,25 @@ export const CanvasThumbnailNavigator: React.FC<CanvasThumbnailNavigatorProps> =
   }, [propManager, hasGeneratedThumbnail, generateThumbnailOnce]);
 
   const manager = activeManager || propManager;
-  const containerRef = activeContainerRef || propContainerRef;
+  // propContainerRef를 우선 사용 (각 브라우저의 올바른 컨테이너)
+  // activeContainerRef는 전역 이벤트로 설정되므로 다른 브라우저의 컨테이너일 수 있음
+  const containerRef = propContainerRef || activeContainerRef;
+
+  // 디버깅: propContainerRef 변경 감지 (필터링: "THUMBNAIL_INIT")
+  useEffect(() => {
+    console.log("[THUMBNAIL_INIT] propContainerRef 상태:", {
+      hasPropManager: !!propManager,
+      hasPropContainerRef: !!propContainerRef,
+      propContainerRefCurrent: propContainerRef?.current ? '있음' : '없음',
+      containerScrollable: propContainerRef?.current ? {
+        scrollWidth: propContainerRef.current.scrollWidth,
+        scrollHeight: propContainerRef.current.scrollHeight,
+        clientWidth: propContainerRef.current.clientWidth,
+        clientHeight: propContainerRef.current.clientHeight,
+        overflow: window.getComputedStyle(propContainerRef.current).overflow,
+      } : null,
+    });
+  }, [propContainerRef, propManager]); // propContainerRef 변경 시마다
 
   // 캔버스 크기 변경 감지 및 미리보기 업데이트 (manager 선언 이후)
   // 성능을 위해 interval 제거하고, 객체 변경 이벤트로 대체
@@ -594,47 +623,117 @@ export const CanvasThumbnailNavigator: React.FC<CanvasThumbnailNavigatorProps> =
     e.stopPropagation();
     
     const canvas = canvasRef.current;
-    const container = containerRef.current;
+    // prop으로 전달받은 containerRef만 사용 (각 브라우저의 올바른 컨테이너)
+    // activeContainerRef는 전역 이벤트로 설정되므로 다른 브라우저의 컨테이너일 수 있어 사용하지 않음
+    const container = propContainerRef?.current;
     const converter = coordinateConverterRef.current;
-    if (!canvas || !container || !converter || canvasSize.width === 0 || canvasSize.height === 0) return;
-
-    // 클릭 좌표 계산 (CSS 크기 기준, DPR 고려 불필요)
-    const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const currentManager = propManager;
+    
+    // 필터링 가능한 로그 태그: "THUMBNAIL_CLICK"
+    if (!canvas || !container || !converter || !currentManager || canvasSize.width === 0 || canvasSize.height === 0) {
+      console.warn("[THUMBNAIL_CLICK] ❌ 클릭 실패:", {
+        hasCanvas: !!canvas,
+        hasContainer: !!container,
+        hasConverter: !!converter,
+        hasManager: !!currentManager,
+        canvasSize: `${canvasSize.width}x${canvasSize.height}`,
+        propContainerRefNull: !propContainerRef,
+        propContainerRefCurrentNull: !propContainerRef?.current,
+        propManagerNull: !propManager,
+      });
+      return;
+    }
+    
+    console.log("[THUMBNAIL_CLICK] ✅ 클릭 시작:", {
+      containerScrollWidth: container.scrollWidth,
+      containerScrollHeight: container.scrollHeight,
+      containerClientWidth: container.clientWidth,
+      containerClientHeight: container.clientHeight,
+      containerScrollLeft: container.scrollLeft,
+      containerScrollTop: container.scrollTop,
+    });
 
     // 실제 미리보기에 그려진 크기 사용 (디스플레이 크기)
     const { width: displayWidth, height: displayHeight } = thumbnailDisplaySize;
 
-    // 클릭한 위치가 디스플레이 영역 내인지 확인
-    if (displayWidth === 0 || displayHeight === 0) {
+    if (displayWidth === 0 || displayHeight === 0 || canvasSize.width === 0 || canvasSize.height === 0) {
+      console.warn("[THUMBNAIL_CLICK] ⚠️ 크기 정보가 0 - 조기 반환");
       return;
     }
+
+    // 간단하고 명확한 좌표 변환 방식
+    // 1. 썸네일 내 클릭 좌표 구하기 (보이는 영역 기준)
+    const rect = canvas.getBoundingClientRect();
     
-    if (x < 0 || x > displayWidth || y < 0 || y > displayHeight) {
-      return; // 디스플레이 영역 밖 클릭은 무시
+    // 썸네일 캔버스의 부모 스크롤 컨테이너 찾기
+    let thumbnailScrollContainer: HTMLElement | null = null;
+    let parent: HTMLElement | null = canvas.parentElement;
+    while (parent) {
+      const style = window.getComputedStyle(parent);
+      if (style.overflow === 'auto' || style.overflow === 'scroll' || 
+          style.overflowY === 'auto' || style.overflowY === 'scroll') {
+        thumbnailScrollContainer = parent;
+        break;
+      }
+      parent = parent.parentElement;
     }
-
-    // CanvasCoordinateConverter를 사용하여 정확한 좌표 변환
-    // 썸네일이 실제 내용 범위만 포함하므로, contentOffset을 사용하지 않고 직접 변환
-    // 썸네일 좌표를 캔버스 좌표로 변환 (썸네일은 전체 캔버스를 나타냄)
-    const canvasCoord = converter.thumbnailToCanvas({ x, y });
     
-    // 클릭한 위치가 뷰포트 중앙에 오도록 스크롤 위치 계산
-    const scrollLeft = Math.max(0, Math.min(canvasCoord.x - container.clientWidth / 2, canvasSize.width - container.clientWidth));
-    const scrollTop = Math.max(0, Math.min(canvasCoord.y - container.clientHeight / 2, canvasSize.height - container.clientHeight));
+    // 클릭 좌표 계산: 보이는 영역 기준
+    // rect는 캔버스의 실제 위치를 반환하지만, 스크롤된 상태에서는 음수일 수 있음
+    // 클릭 좌표는 보이는 영역 기준으로만 계산
+    let clickX = e.clientX - rect.left;
+    let clickY = e.clientY - rect.top;
     
-    const scrollPosition = { scrollLeft, scrollTop };
-
-    // 스크롤 이동 (최소/최대값 제한)
+    // 클릭 좌표를 디스플레이 크기 기준으로 정규화
+    // rect.width/height는 전체 캔버스 크기일 수 있으므로, 
+    // 디스플레이 크기(보이는 영역) 기준으로 변환해야 함
+    // 클릭한 위치를 디스플레이 크기 범위(0 ~ displayWidth/Height)로 정규화
+    const normalizeX = (clickX / Math.max(rect.width, displayWidth)) * displayWidth;
+    const normalizeY = (clickY / Math.max(rect.height, displayHeight)) * displayHeight;
+    
+    // 디스플레이 크기 내로 제한 (보이는 영역만 고려)
+    clickX = Math.max(0, Math.min(normalizeX, displayWidth));
+    clickY = Math.max(0, Math.min(normalizeY, displayHeight));
+    
+    // 2. 썸네일과 실제 컨테이너의 비율 계산
+    // 썸네일 높이 대비 실제 컨테이너 높이의 비율
+    const scrollRatioX = container.scrollWidth / displayWidth;
+    const scrollRatioY = container.scrollHeight / displayHeight;
+    
+    // 3. 실제 캔버스에서의 목표 위치 계산 (비율 곱하기)
+    const targetScrollX = clickX * scrollRatioX;
+    const targetScrollY = clickY * scrollRatioY;
+    
+    // 4. 클릭한 지점이 화면 중앙에 오도록 보정
+    // (목표 위치 - 뷰포트 크기의 절반)
+    const centeredScrollX = targetScrollX - (container.clientWidth / 2);
+    const centeredScrollY = targetScrollY - (container.clientHeight / 2);
+    
+    // 5. 스크롤 범위 체크 및 최종 값 계산
     const maxScrollLeft = Math.max(0, container.scrollWidth - container.clientWidth);
     const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
-    const finalScrollLeft = Math.max(0, Math.min(scrollPosition.scrollLeft, maxScrollLeft));
-    const finalScrollTop = Math.max(0, Math.min(scrollPosition.scrollTop, maxScrollTop));
+    const finalScrollLeft = Math.max(0, Math.min(centeredScrollX, maxScrollLeft));
+    const finalScrollTop = Math.max(0, Math.min(centeredScrollY, maxScrollTop));
+    
+    console.log("[THUMBNAIL_CLICK] 클릭 좌표 계산:", {
+      클릭좌표: `(${Math.round(clickX)}, ${Math.round(clickY)})`,
+      디스플레이크기: `${displayWidth}x${displayHeight}`,
+      컨테이너크기: `${container.scrollWidth}x${container.scrollHeight}`,
+      비율: `(${scrollRatioX.toFixed(2)}, ${scrollRatioY.toFixed(2)})`,
+      목표스크롤: `(${Math.round(targetScrollX)}, ${Math.round(targetScrollY)})`,
+      중앙보정: `(${Math.round(centeredScrollX)}, ${Math.round(centeredScrollY)})`,
+      최종스크롤: `(${Math.round(finalScrollLeft)}, ${Math.round(finalScrollTop)})`,
+    });
 
-    // 즉시 스크롤 (smooth 스크롤이 문제를 일으킬 수 있음)
-    container.scrollLeft = finalScrollLeft;
-    container.scrollTop = finalScrollTop;
+    // 스크롤 실행 (smooth 스크롤 사용)
+    container.scrollTo({
+      left: finalScrollLeft,
+      top: finalScrollTop,
+      behavior: 'smooth' // 부드럽게 이동
+    });
+    
+    // smooth 스크롤은 애니메이션으로 이동하므로 즉시 값이 변경되지 않음
+    // 따라서 스크롤 검증 로직은 제거 (정상 동작하므로 불필요)
   };
 
   // manager가 없으면 아무것도 렌더링하지 않음
