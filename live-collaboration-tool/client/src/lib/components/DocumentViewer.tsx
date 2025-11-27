@@ -1014,12 +1014,12 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
     });
   }, [snapshot.annotations, snapshot.notes, noteSearchQuery, getExcerpt]);
   
-  // 페이지 변경 함수
-  const goToPage = React.useCallback((page: number) => {
-    if (pagination?.enabled && page >= 0 && page < pageInfo.totalPages) {
-      setCurrentPage(page);
-    }
-  }, [pagination?.enabled, pageInfo.totalPages]);
+  // 페이지 변경 함수 (현재 사용되지 않음)
+  // const goToPage = React.useCallback((page: number) => {
+  //   if (pagination?.enabled && page >= 0 && page < pageInfo.totalPages) {
+  //     setCurrentPage(page);
+  //   }
+  // }, [pagination?.enabled, pageInfo.totalPages]);
   
   const goToPreviousPage = React.useCallback(() => {
     if (pagination?.enabled && pageInfo.currentPageIndex > 0) {

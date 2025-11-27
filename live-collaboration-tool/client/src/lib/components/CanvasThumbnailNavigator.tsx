@@ -271,7 +271,6 @@ export const CanvasThumbnailNavigator: React.FC<CanvasThumbnailNavigatorProps> =
     // 캔버스 내용 업데이트 시 썸네일 자동 갱신
     const handleCanvasContentUpdated = (e: CustomEvent) => {
       const updatedManager = e.detail.manager;
-      const updatedContainer = e.detail.container;
       
       // propManager와 일치하는 경우에만 갱신 (같은 브라우저의 manager만)
       // propManager가 없으면 이 이벤트를 무시 (각 브라우저는 자신의 propManager를 가져야 함)
@@ -367,7 +366,6 @@ export const CanvasThumbnailNavigator: React.FC<CanvasThumbnailNavigatorProps> =
       // 컨테이너 크기 (스크롤 가능하도록 충분한 공간 확보)
       const maxWidth = previewWidth;
       const containerHeight = container?.clientHeight || previewHeight || 800;
-      const maxHeight = Math.max(containerHeight, previewHeight);
       
       // 이미지 비율 유지하면서 표시 크기 계산
       const imgAspect = img.width / img.height;
@@ -385,8 +383,8 @@ export const CanvasThumbnailNavigator: React.FC<CanvasThumbnailNavigatorProps> =
       const dpr = window.devicePixelRatio || 1;
       
       // 실제 캔버스 크기는 디스플레이 크기 × DPR × 2 (더 높은 해상도)
-      const canvasWidth = displayWidth * dpr * 2;
-      const canvasHeight = displayHeight * dpr * 2;
+      // const canvasWidth = displayWidth * dpr * 2;
+      // const canvasHeight = displayHeight * dpr * 2;
       
       
       // 실제 미리보기에 그려진 크기 저장 (디스플레이 크기)
@@ -664,19 +662,6 @@ export const CanvasThumbnailNavigator: React.FC<CanvasThumbnailNavigatorProps> =
     // 간단하고 명확한 좌표 변환 방식
     // 1. 썸네일 내 클릭 좌표 구하기 (보이는 영역 기준)
     const rect = canvas.getBoundingClientRect();
-    
-    // 썸네일 캔버스의 부모 스크롤 컨테이너 찾기
-    let thumbnailScrollContainer: HTMLElement | null = null;
-    let parent: HTMLElement | null = canvas.parentElement;
-    while (parent) {
-      const style = window.getComputedStyle(parent);
-      if (style.overflow === 'auto' || style.overflow === 'scroll' || 
-          style.overflowY === 'auto' || style.overflowY === 'scroll') {
-        thumbnailScrollContainer = parent;
-        break;
-      }
-      parent = parent.parentElement;
-    }
     
     // 클릭 좌표 계산: 보이는 영역 기준
     // rect는 캔버스의 실제 위치를 반환하지만, 스크롤된 상태에서는 음수일 수 있음
