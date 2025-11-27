@@ -64,8 +64,10 @@ export class CanvasManager {
   private userIdToCursor: Map<string, PIXI.Graphics> = new Map();
   private isDrawing: boolean = false;
   private lastPoint: { x: number; y: number } | null = null;
-  private remoteUserIdToLastPoint: Map<string, { x: number; y: number; timestamp: number; strokeId?: string }> =
-    new Map();
+  private remoteUserIdToLastPoint: Map<
+    string,
+    { x: number; y: number; timestamp: number; strokeId?: string }
+  > = new Map();
   private brushSize: number = 5;
   private brushColor: number = 0x000000;
   private adjustSizeTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -172,8 +174,6 @@ export class CanvasManager {
 
       // 컨테이너의 현재 중심점 계산 (bounds 기준)
       const currentBounds = dragData.container.getBounds(true);
-      const currentCenterX = currentBounds.x + currentBounds.width / 2;
-      const currentCenterY = currentBounds.y + currentBounds.height / 2;
 
       // 마우스 위치에서 중심점까지의 거리 계산
       const dx = event.global.x - dragData.centerX;
@@ -186,13 +186,13 @@ export class CanvasManager {
 
       // 컨테이너 스케일 적용
       dragData.container.scale.set(newScale);
-      
+
       // 메타데이터 업데이트
       const meta = this.canvasObjectMetadata.get(dragData.objectId);
       if (meta) {
         meta.scale = newScale;
       }
-      
+
       // 선택 박스 및 Transform 오버레이 업데이트
       this.updateObjectSelectionBox();
       this.updateTransformOverlay();
@@ -323,15 +323,16 @@ export class CanvasManager {
 
   private onPointerDown(event: PIXI.FederatedPointerEvent): void {
     if (!this.graphics || this.isBackgroundDragging) return;
-    
+
     // Transform 모드일 때는 그림 그리기 안 함
     if (this.isTransformMode && !this.isTransformHotkey) {
       // Transform 모드에서 빈 공간 클릭 시 선택 해제
       // event.target이 stage나 graphics면 빈 공간 클릭으로 간주
       const target = event.target;
-      const isCanvasObject = target && 
-        Array.from(this.canvasObjects.values()).some(obj => 
-          obj === target || obj.children.includes(target as any)
+      const isCanvasObject =
+        target &&
+        Array.from(this.canvasObjects.values()).some(
+          (obj) => obj === target || obj.children.includes(target as any)
         );
       if (!isCanvasObject) {
         this.clearObjectSelection();
@@ -672,7 +673,7 @@ export class CanvasManager {
     // 패딩 추가 (20px)
     const padding = 20;
     // 배경 이미지가 있을 때는 가로 크기를 변경하지 않음 (배경 이미지 크기에 맞춰 이미 설정됨)
-    const newWidth = this.backgroundSprite 
+    const newWidth = this.backgroundSprite
       ? this.app.screen.width // 배경 이미지가 있으면 가로 크기 유지
       : Math.max(this.app.screen.width, maxX - minX + padding * 2);
     const newHeight = Math.max(
@@ -889,7 +890,7 @@ export class CanvasManager {
         const strokeId = data.strokeId;
         const strokeState = data.strokeState;
         const middlePoints = data.middlePoints;
-        
+
         // stroke 상태에 따라 처리
         if (strokeState === "start") {
           // 새로운 획 시작: 점으로 표시
@@ -901,7 +902,7 @@ export class CanvasManager {
             );
             this.graphics.fill(color);
           } catch {}
-          
+
           // 이전 점 정보 업데이트 (새로운 획 시작)
           this.remoteUserIdToLastPoint.set(userId, {
             x: data.x,
@@ -918,23 +919,24 @@ export class CanvasManager {
                 width: data.brushSize || this.brushSize,
                 color,
               });
-              
+
               // 미들포인트가 있으면 부드러운 곡선 처리
               // 성능 최적화: 미들포인트가 너무 많으면 제한
               const maxMiddlePoints = 20; // 최대 20개의 미들포인트만 사용
-              const effectiveMiddlePoints = middlePoints && middlePoints.length > 0
-                ? middlePoints.slice(0, maxMiddlePoints)
-                : undefined;
-              
+              const effectiveMiddlePoints =
+                middlePoints && middlePoints.length > 0
+                  ? middlePoints.slice(0, maxMiddlePoints)
+                  : undefined;
+
               if (effectiveMiddlePoints && effectiveMiddlePoints.length > 0) {
                 // 이전 점에서 시작
                 this.graphics.moveTo(prev.x, prev.y);
-                
+
                 // 미들포인트들을 순차적으로 연결
                 effectiveMiddlePoints.forEach((point) => {
                   this.graphics.lineTo(point.x, point.y);
                 });
-                
+
                 // 현재 점까지 연결
                 this.graphics.lineTo(data.x, data.y);
               } else {
@@ -942,11 +944,15 @@ export class CanvasManager {
                 this.graphics.moveTo(prev.x, prev.y);
                 this.graphics.lineTo(data.x, data.y);
               }
-              
+
               this.graphics.stroke();
-              
+
               // 선 끝에 원을 그려서 부드럽게 연결
-              this.graphics.circle(data.x, data.y, (data.brushSize || this.brushSize) / 2);
+              this.graphics.circle(
+                data.x,
+                data.y,
+                (data.brushSize || this.brushSize) / 2
+              );
               this.graphics.fill(color);
             } catch (error) {
               console.error("원격 선 연결 중 오류:", error);
@@ -962,7 +968,7 @@ export class CanvasManager {
               this.graphics.fill(color);
             } catch {}
           }
-          
+
           // 이전 점 정보 업데이트
           this.remoteUserIdToLastPoint.set(userId, {
             x: data.x,
@@ -970,7 +976,7 @@ export class CanvasManager {
             timestamp: currentTimestamp,
             strokeId: strokeId,
           });
-          
+
           // 획 종료 시 경로 초기화
           if (strokeState === "end") {
             this.remoteUserIdToLastPoint.delete(userId);
@@ -980,7 +986,7 @@ export class CanvasManager {
           if (prev) {
             const timeDelta = currentTimestamp - prev.timestamp;
             const POINT_CLICK_THRESHOLD_MS = 2000;
-            
+
             if (timeDelta > POINT_CLICK_THRESHOLD_MS) {
               try {
                 this.graphics.circle(
@@ -1013,13 +1019,143 @@ export class CanvasManager {
               this.graphics.fill(color);
             } catch {}
           }
-          
+
           this.remoteUserIdToLastPoint.set(userId, {
             x: data.x,
             y: data.y,
             timestamp: currentTimestamp,
             strokeId: strokeId,
           });
+        }
+        break;
+      }
+      case "erase": {
+        // 지우개는 destination-out 모드로 그리기
+        const prev = this.remoteUserIdToLastPoint.get(userId);
+        const currentTimestamp = data.timestamp || Date.now();
+        const strokeId = data.strokeId;
+        const strokeState = data.strokeState;
+        const middlePoints = data.middlePoints;
+
+        if (strokeState === "start" || !strokeState) {
+          // 지우개 시작: 점으로 표시
+          try {
+            this.graphics.circle(
+              data.x,
+              data.y,
+              (data.brushSize || this.brushSize) / 2
+            );
+            this.graphics.fill({ color: 0xffffff, alpha: 1 });
+            this.graphics.blendMode = "erase";
+          } catch {}
+          this.remoteUserIdToLastPoint.set(userId, {
+            x: data.x,
+            y: data.y,
+            timestamp: currentTimestamp,
+            strokeId: strokeId,
+          });
+        } else if (strokeState === "move" || strokeState === "end") {
+          if (prev && prev.strokeId === strokeId) {
+            try {
+              this.graphics.blendMode = "erase";
+              this.graphics.setStrokeStyle({
+                width: data.brushSize || this.brushSize,
+                color: 0xffffff,
+              });
+
+              if (middlePoints && middlePoints.length > 0) {
+                this.graphics.moveTo(prev.x, prev.y);
+                middlePoints.forEach((point) => {
+                  this.graphics.lineTo(point.x, point.y);
+                });
+                this.graphics.lineTo(data.x, data.y);
+              } else {
+                this.graphics.moveTo(prev.x, prev.y);
+                this.graphics.lineTo(data.x, data.y);
+              }
+              this.graphics.stroke();
+
+              this.graphics.circle(
+                data.x,
+                data.y,
+                (data.brushSize || this.brushSize) / 2
+              );
+              this.graphics.fill({ color: 0xffffff, alpha: 1 });
+            } catch (error) {
+              console.error("원격 지우기 중 오류:", error);
+            }
+          }
+          this.remoteUserIdToLastPoint.set(userId, {
+            x: data.x,
+            y: data.y,
+            timestamp: currentTimestamp,
+            strokeId: strokeId,
+          });
+          if (strokeState === "end") {
+            this.remoteUserIdToLastPoint.delete(userId);
+            this.graphics.blendMode = "normal";
+          }
+        }
+        break;
+      }
+      case "shape": {
+        // 도형 그리기 (일회성 작업)
+        if (data.tool && data.x2 !== undefined && data.y2 !== undefined && data.color) {
+          try {
+            const color = typeof data.color === "string"
+              ? parseInt(data.color.replace("#", ""), 16)
+              : data.color;
+            this.graphics.setStrokeStyle({
+              width: data.brushSize || 2,
+              color,
+            });
+
+            switch (data.tool) {
+              case "rectangle":
+                this.graphics.rect(data.x, data.y, data.x2 - data.x, data.y2 - data.y);
+                this.graphics.stroke();
+                break;
+              case "circle": {
+                const radius = Math.hypot(data.x2 - data.x, data.y2 - data.y);
+                this.graphics.circle(data.x, data.y, radius);
+                this.graphics.stroke();
+                break;
+              }
+              case "line":
+                this.graphics.moveTo(data.x, data.y);
+                this.graphics.lineTo(data.x2, data.y2);
+                this.graphics.stroke();
+                break;
+            }
+          } catch (error) {
+            console.error("원격 도형 그리기 중 오류:", error);
+          }
+        }
+        break;
+      }
+      case "text": {
+        // 텍스트 그리기 (일회성 작업)
+        // PIXI.js Graphics에는 text() 메서드가 없으므로 PIXI.Text 객체를 생성
+        if (data.text && data.fontSize && data.color && this.app) {
+          try {
+            const color = typeof data.color === "string"
+              ? parseInt(data.color.replace("#", ""), 16)
+              : data.color;
+            const textObj = new PIXI.Text({
+              text: data.text,
+              style: {
+                fontSize: data.fontSize,
+                fill: color,
+              },
+            });
+            textObj.position.set(data.x, data.y);
+            // graphics와 같은 레벨에 추가 (app.stage에 직접 추가)
+            this.app.stage.addChild(textObj);
+            // 텍스트는 그리기 레이어에 포함되므로 graphics 다음에 렌더링되도록 순서 조정
+            // (이미 graphics가 stage에 추가되어 있으므로, textObj를 나중에 추가하면 위에 렌더링됨)
+          } catch (error) {
+            console.error("원격 텍스트 그리기 중 오류:", error);
+          }
         }
         break;
       }
@@ -1081,17 +1217,11 @@ export class CanvasManager {
   // - app.canvas (DOM 요소) 크기 자동 조절
   resize(width: number, height: number): void {
     if (this.app && this.app.renderer) {
-      const beforeSize = {
-        width: this.app.screen.width,
-        height: this.app.screen.height,
-      };
-      
-      
       // PIXI renderer와 screen 크기 모두 자동 업데이트됨
       // app.renderer.resize()는 내부적으로 app.screen 크기도 업데이트하고
       // app.canvas DOM 요소의 크기도 자동으로 조절함
       this.app.renderer.resize(width, height);
-      
+
       // hitArea 업데이트 (캔버스 크기 변경 시 좌표 변환 정확도 유지)
       if (this.app.stage) {
         this.app.stage.hitArea = this.app.screen;
@@ -1103,14 +1233,6 @@ export class CanvasManager {
         this.backgroundSprite.position.set(0, 0);
         this.backgroundSprite.anchor.set(0, 0);
       }
-
-      // 실제로 업데이트되었는지 확인
-      const afterSize = {
-        width: this.app.screen.width,
-        height: this.app.screen.height,
-        canvasWidth: this.app.canvas?.width,
-        canvasHeight: this.app.canvas?.height,
-      };
 
       // adjustCanvasSizeForObjects는 resize를 호출할 수 있으므로 여기서 호출하면 무한 루프 발생
       // 따라서 resize에서는 크기만 조정하고, adjustCanvasSizeForObjects는 객체 추가 시에만 호출
@@ -1408,10 +1530,10 @@ export class CanvasManager {
 
       // 오버레이 이미지를 선택하고 Transform 대상으로 설정
       this.selectObject(objectId);
-      
+
       // Transform 오버레이 업데이트 (핸들 표시)
       this.updateTransformOverlay();
-      
+
       const global = event.global;
       dragData = {
         startX: global.x,
@@ -1472,20 +1594,23 @@ export class CanvasManager {
    */
   private updateObjectEventMode(container: PIXI.Container): void {
     const handlers = (container as any).__objectInteractionHandlers;
-    
+
     if (this.isTransformMode || this.isTransformHotkey) {
       // Transform 모드일 때는 이벤트를 받을 수 있도록 설정
       container.eventMode = "static";
       container.cursor = "move";
-      
+
       // 컨테이너의 모든 자식 요소(스프라이트 등)도 이벤트를 받을 수 있도록 설정
       container.children.forEach((child) => {
         // eventMode 속성이 있는 모든 자식 요소에 대해 설정
-        if ('eventMode' in child && typeof (child as any).eventMode !== 'undefined') {
+        if (
+          "eventMode" in child &&
+          typeof (child as any).eventMode !== "undefined"
+        ) {
           (child as any).eventMode = "static";
         }
       });
-      
+
       // 핸들러 재등록 (이미 등록되어 있어도 안전)
       if (handlers) {
         container.on("pointerdown", handlers.pointerdown);
@@ -1499,16 +1624,22 @@ export class CanvasManager {
       container.eventMode = "none";
       container.cursor = "default";
       container.hitArea = null;
-      
+
       // 컨테이너의 모든 자식 요소(스프라이트 등)도 이벤트를 받지 않도록 설정
       // 이렇게 하면 이미지 위에서도 그리기가 가능합니다
       container.children.forEach((child) => {
         // eventMode 속성이 있는 모든 자식 요소에 대해 설정
-        if ('eventMode' in child && typeof (child as any).eventMode !== 'undefined') {
+        if (
+          "eventMode" in child &&
+          typeof (child as any).eventMode !== "undefined"
+        ) {
           (child as any).eventMode = "none";
         }
         // hitArea 속성이 있는 경우 null로 설정
-        if ('hitArea' in child && typeof (child as any).hitArea !== 'undefined') {
+        if (
+          "hitArea" in child &&
+          typeof (child as any).hitArea !== "undefined"
+        ) {
           (child as any).hitArea = null;
         }
       });
@@ -1638,7 +1769,7 @@ export class CanvasManager {
         width: bgBounds.width,
         height: bgBounds.height,
       });
-      
+
       // 배경 이미지 bounds 계산
     }
 
@@ -1675,12 +1806,12 @@ export class CanvasManager {
     try {
       // 실제 내용 범위 계산
       const allBounds = this.getAllObjectsBounds();
-      
+
       let contentMinX: number;
       let contentMinY: number;
       let contentWidth: number;
       let contentHeight: number;
-      
+
       if (allBounds.length === 0) {
         // 내용이 없으면 기본 크기 사용
         const canvasWidth = this.app.screen.width;
@@ -1693,37 +1824,41 @@ export class CanvasManager {
         contentMinY = 0;
         contentWidth = canvasWidth;
         contentHeight = canvasHeight;
-        
       } else {
         // 실제 렌더링된 픽셀을 확인하여 여백 제거
         // 먼저 렌더링 강제 업데이트
         this.app.renderer.render(this.app.stage);
         const canvas = this.app.canvas as HTMLCanvasElement;
-        
+
         if (canvas && canvas.width > 0 && canvas.height > 0) {
           // 캔버스의 픽셀 데이터를 읽어서 실제로 그려진 영역 찾기
           const tempCanvas = document.createElement("canvas");
           tempCanvas.width = canvas.width;
           tempCanvas.height = canvas.height;
           const tempCtx = tempCanvas.getContext("2d");
-          
+
           if (tempCtx) {
             // 원본 캔버스를 임시 캔버스에 복사
             tempCtx.drawImage(canvas, 0, 0);
-            const imageData = tempCtx.getImageData(0, 0, canvas.width, canvas.height);
+            const imageData = tempCtx.getImageData(
+              0,
+              0,
+              canvas.width,
+              canvas.height
+            );
             const data = imageData.data;
-            
+
             // 투명하지 않은 픽셀의 최소/최대 좌표 찾기
             let minX = Infinity;
             let minY = Infinity;
             let maxX = -Infinity;
             let maxY = -Infinity;
-            
+
             for (let y = 0; y < canvas.height; y++) {
               for (let x = 0; x < canvas.width; x++) {
                 const index = (y * canvas.width + x) * 4;
                 const alpha = data[index + 3]; // Alpha 채널
-                
+
                 // 투명하지 않은 픽셀 (alpha > 0)
                 if (alpha > 0) {
                   minX = Math.min(minX, x);
@@ -1733,33 +1868,38 @@ export class CanvasManager {
                 }
               }
             }
-            
+
             // 실제 내용 범위
-            if (minX !== Infinity && minY !== Infinity && maxX !== -Infinity && maxY !== -Infinity) {
+            if (
+              minX !== Infinity &&
+              minY !== Infinity &&
+              maxX !== -Infinity &&
+              maxY !== -Infinity
+            ) {
               contentMinX = Math.max(0, minX);
               contentMinY = Math.max(0, minY);
               contentWidth = maxX - contentMinX + 1; // +1은 마지막 픽셀 포함
               contentHeight = maxY - contentMinY + 1;
-              
             } else {
               // 픽셀 분석 실패 시 bounds 기반 계산으로 폴백
               let boundsMinX = Infinity;
               let boundsMinY = Infinity;
               let boundsMaxX = -Infinity;
               let boundsMaxY = -Infinity;
-              
-              allBounds.forEach(bound => {
+
+              allBounds.forEach((bound) => {
                 boundsMinX = Math.min(boundsMinX, bound.x);
                 boundsMinY = Math.min(boundsMinY, bound.y);
                 boundsMaxX = Math.max(boundsMaxX, bound.x + bound.width);
                 boundsMaxY = Math.max(boundsMaxY, bound.y + bound.height);
               });
-              
+
               contentMinX = Math.max(0, boundsMinX);
               contentMinY = Math.max(0, boundsMinY);
-              contentWidth = Math.min(boundsMaxX, this.app.screen.width) - contentMinX;
-              contentHeight = Math.min(boundsMaxY, this.app.screen.height) - contentMinY;
-              
+              contentWidth =
+                Math.min(boundsMaxX, this.app.screen.width) - contentMinX;
+              contentHeight =
+                Math.min(boundsMaxY, this.app.screen.height) - contentMinY;
             }
           } else {
             // 2D 컨텍스트를 가져올 수 없으면 bounds 기반 계산
@@ -1767,18 +1907,20 @@ export class CanvasManager {
             let boundsMinY = Infinity;
             let boundsMaxX = -Infinity;
             let boundsMaxY = -Infinity;
-            
-            allBounds.forEach(bound => {
+
+            allBounds.forEach((bound) => {
               boundsMinX = Math.min(boundsMinX, bound.x);
               boundsMinY = Math.min(boundsMinY, bound.y);
               boundsMaxX = Math.max(boundsMaxX, bound.x + bound.width);
               boundsMaxY = Math.max(boundsMaxY, bound.y + bound.height);
             });
-            
+
             contentMinX = Math.max(0, boundsMinX);
             contentMinY = Math.max(0, boundsMinY);
-            contentWidth = Math.min(boundsMaxX, this.app.screen.width) - contentMinX;
-            contentHeight = Math.min(boundsMaxY, this.app.screen.height) - contentMinY;
+            contentWidth =
+              Math.min(boundsMaxX, this.app.screen.width) - contentMinX;
+            contentHeight =
+              Math.min(boundsMaxY, this.app.screen.height) - contentMinY;
           }
         } else {
           // 캔버스가 없으면 bounds 기반 계산
@@ -1786,18 +1928,20 @@ export class CanvasManager {
           let boundsMinY = Infinity;
           let boundsMaxX = -Infinity;
           let boundsMaxY = -Infinity;
-          
-          allBounds.forEach(bound => {
+
+          allBounds.forEach((bound) => {
             boundsMinX = Math.min(boundsMinX, bound.x);
             boundsMinY = Math.min(boundsMinY, bound.y);
             boundsMaxX = Math.max(boundsMaxX, bound.x + bound.width);
             boundsMaxY = Math.max(boundsMaxY, bound.y + bound.height);
           });
-          
+
           contentMinX = Math.max(0, boundsMinX);
           contentMinY = Math.max(0, boundsMinY);
-          contentWidth = Math.min(boundsMaxX, this.app.screen.width) - contentMinX;
-          contentHeight = Math.min(boundsMaxY, this.app.screen.height) - contentMinY;
+          contentWidth =
+            Math.min(boundsMaxX, this.app.screen.width) - contentMinX;
+          contentHeight =
+            Math.min(boundsMaxY, this.app.screen.height) - contentMinY;
         }
       }
 
@@ -1812,7 +1956,7 @@ export class CanvasManager {
       // 전체 캔버스 크기 사용 (여백 제거하지 않음 - 배경 이미지 잘림 방지)
       const fullCanvasWidth = this.app.screen.width;
       const fullCanvasHeight = this.app.screen.height;
-      
+
       // 스케일 계산 (캔버스 전체의 비율 유지하면서 최대 크기 내에 맞춤)
       const scaleX = maxWidth / fullCanvasWidth;
       const scaleY = maxHeight / fullCanvasHeight;
@@ -1834,7 +1978,10 @@ export class CanvasManager {
 
       // 캔버스가 WebGL 제한보다 크면 타일링 방식으로 처리
       // 전체 캔버스를 그리기 위해 offset을 0으로 설정
-      if (fullCanvasWidth > maxTextureSize || fullCanvasHeight > maxTextureSize) {
+      if (
+        fullCanvasWidth > maxTextureSize ||
+        fullCanvasHeight > maxTextureSize
+      ) {
         return this.createThumbnailByTiling(
           canvas,
           fullCanvasWidth,
@@ -1843,7 +1990,7 @@ export class CanvasManager {
           thumbnailHeight,
           maxTextureSize,
           0, // offsetX: 전체 캔버스를 그리기 위해 0
-          0  // offsetY: 전체 캔버스를 그리기 위해 0
+          0 // offsetY: 전체 캔버스를 그리기 위해 0
         );
       }
 
@@ -1874,18 +2021,28 @@ export class CanvasManager {
       );
 
       const dataUrl = thumbnailCanvas.toDataURL("image/png");
-      
+
       // dataUrl이 유효한지 확인
       if (!dataUrl || dataUrl === "data:," || dataUrl.length < 100) {
         // dataUrl이 유효하지 않음, renderer.extract 사용
         // WebGL 캔버스는 직접 toDataURL이 작동하지 않을 수 있으므로 renderer.extract 사용
         try {
-          const extractedCanvas = this.app.renderer.extract.canvas(this.app.stage);
-          if (extractedCanvas && extractedCanvas.width > 0 && extractedCanvas.height > 0) {
+          const extractedCanvas = this.app.renderer.extract.canvas(
+            this.app.stage
+          );
+          if (
+            extractedCanvas &&
+            extractedCanvas.width > 0 &&
+            extractedCanvas.height > 0
+          ) {
             const htmlCanvas = extractedCanvas as unknown as HTMLCanvasElement;
             // 전체 캔버스를 썸네일로 변환
             const fullDataUrl = htmlCanvas.toDataURL("image/png");
-            if (fullDataUrl && fullDataUrl !== "data:," && fullDataUrl.length > 100) {
+            if (
+              fullDataUrl &&
+              fullDataUrl !== "data:," &&
+              fullDataUrl.length > 100
+            ) {
               return fullDataUrl;
             }
           }
@@ -1894,8 +2051,7 @@ export class CanvasManager {
         }
         return null;
       }
-      
-      
+
       return dataUrl;
     } catch (error) {
       console.error("썸네일 생성 실패:", error);
@@ -1979,13 +2135,13 @@ export class CanvasManager {
       }
 
       const dataUrl = thumbnailCanvas.toDataURL("image/png");
-      
+
       // dataUrl이 유효한지 확인
       if (!dataUrl || dataUrl === "data:," || dataUrl.length < 100) {
         // 타일링 dataUrl이 유효하지 않음
         return null;
       }
-      
+
       return dataUrl;
     } catch (error) {
       console.error("타일링 썸네일 생성 실패:", error);
@@ -2147,25 +2303,10 @@ export class CanvasManager {
     texture: PIXI.Texture,
     dataUrl?: string
   ): void {
-    console.log("🔵 [배경이미지] applyBackgroundTexture 시작");
-    console.log(
-      "🔵 [배경이미지] 원본 크기:",
-      texture.width,
-      "x",
-      texture.height
-    );
-
     if (!this.backgroundLayer || !this.app) {
       console.error("❌ [배경이미지] backgroundLayer 또는 app이 없음");
       return;
     }
-
-    console.log(
-      "🔵 [배경이미지] 현재 캔버스 크기:",
-      this.app.screen.width,
-      "x",
-      this.app.screen.height
-    );
 
     // 이전 이미지 제거
     if (this.backgroundSprite) {
@@ -2184,9 +2325,6 @@ export class CanvasManager {
     // 배경 이미지는 왼쪽 상단 모서리(0, 0)에서 시작 (항상 고정)
     this.backgroundSprite.anchor.set(0, 0);
     this.backgroundSprite.position.set(0, 0);
-    console.log(
-      "🔵 [배경이미지] 스프라이트 생성, anchor: (0, 0), position: (0, 0)"
-    );
 
     this.backgroundOriginalSize = {
       width: texture.width,
@@ -2199,20 +2337,9 @@ export class CanvasManager {
       texture.width,
       texture.height
     );
-    console.log("🔵 [배경이미지] 계산된 스케일:", fitScale);
 
     this.backgroundScale = fitScale;
     this.backgroundSprite.scale.set(this.backgroundScale);
-    console.log(
-      "🔵 [배경이미지] 스프라이트 스케일 적용:",
-      this.backgroundScale
-    );
-    console.log(
-      "🔵 [배경이미지] 스케일된 크기:",
-      texture.width * this.backgroundScale,
-      "x",
-      texture.height * this.backgroundScale
-    );
 
     this.onBackgroundScaleChange?.(this.backgroundScale);
 
@@ -2225,57 +2352,19 @@ export class CanvasManager {
     // 세로 방향으로 잘리지 않도록 캔버스 높이를 이미지 높이에 맞게 확장합니다.
     const scaledHeight = texture.height * this.backgroundScale;
     const scaledWidth = texture.width * this.backgroundScale;
-    console.log(
-      "🔵 [배경이미지] 스케일된 크기:",
-      scaledWidth,
-      "x",
-      scaledHeight
-    );
-    console.log(
-      "🔵 [배경이미지] 현재 캔버스 크기:",
-      this.app.screen.width,
-      "x",
-      this.app.screen.height
-    );
 
     // 배경 이미지가 캔버스 크기를 넘어가지 않도록 확인
     if (scaledWidth > this.app.screen.width) {
-      console.warn(
-        "⚠️ [배경이미지] 스케일된 가로 크기가 캔버스보다 큼:",
-        scaledWidth,
-        ">",
-        this.app.screen.width
-      );
       // 가로 크기에 맞춰 스케일 재조정
       const correctedScale = this.app.screen.width / texture.width;
-      console.log("🔵 [배경이미지] 스케일 재조정:", correctedScale);
       this.backgroundScale = correctedScale;
       this.backgroundSprite.scale.set(this.backgroundScale);
       const newScaledHeight = texture.height * this.backgroundScale;
-      const newScaledWidth = texture.width * this.backgroundScale;
-      console.log(
-        "🔵 [배경이미지] 재조정된 크기:",
-        newScaledWidth,
-        "x",
-        newScaledHeight
-      );
 
       // 캔버스 높이를 재조정된 이미지 높이에 맞춤
       if (newScaledHeight > this.app.screen.height) {
-        console.log(
-          "🔵 [배경이미지] 캔버스 높이 확장:",
-          this.app.screen.width,
-          "x",
-          newScaledHeight
-        );
         this.resize(this.app.screen.width, newScaledHeight);
       } else {
-        console.log(
-          "🔵 [배경이미지] 캔버스 높이 유지 (이미지가 작음):",
-          this.app.screen.width,
-          "x",
-          this.app.screen.height
-        );
         this.resize(
           this.app.screen.width,
           Math.max(this.app.screen.height, newScaledHeight)
@@ -2283,24 +2372,11 @@ export class CanvasManager {
       }
     } else {
       // 가로 크기가 캔버스보다 작거나 같으면 정상 처리
-      console.log("🔵 [배경이미지] 가로 크기 정상, 캔버스 높이 조정");
       if (scaledHeight > this.app.screen.height) {
         // 가로 크기는 그대로 유지하고, 세로만 확장
-        console.log(
-          "🔵 [배경이미지] 캔버스 높이 확장:",
-          this.app.screen.width,
-          "x",
-          scaledHeight
-        );
         this.resize(this.app.screen.width, scaledHeight);
       } else {
         // 이미지가 작아도 최소한 이미지 높이만큼은 확보
-        console.log(
-          "🔵 [배경이미지] 캔버스 높이 유지:",
-          this.app.screen.width,
-          "x",
-          Math.max(this.app.screen.height, scaledHeight)
-        );
         this.resize(
           this.app.screen.width,
           Math.max(this.app.screen.height, scaledHeight)
@@ -2313,133 +2389,15 @@ export class CanvasManager {
       this.backgroundSprite.position.set(0, 0);
       this.backgroundSprite.anchor.set(0, 0);
 
-      // 실제 world position 확인
-      const worldPos = this.backgroundSprite.getGlobalPosition();
-      const bounds = this.backgroundSprite.getBounds();
-
-      console.log("🔵 [배경이미지] 최종 위치 확인:");
-      console.log(
-        "  - local position:",
-        this.backgroundSprite.position.x,
-        this.backgroundSprite.position.y
-      );
-      console.log("  - world position:", worldPos.x, worldPos.y);
-      console.log(
-        "  - anchor:",
-        this.backgroundSprite.anchor.x,
-        this.backgroundSprite.anchor.y
-      );
-      console.log(
-        "  - scale:",
-        this.backgroundSprite.scale.x,
-        this.backgroundSprite.scale.y
-      );
-      console.log(
-        "  - 크기:",
-        this.backgroundSprite.width,
-        "x",
-        this.backgroundSprite.height
-      );
-      console.log(
-        "  - bounds:",
-        bounds.x,
-        bounds.y,
-        bounds.width,
-        "x",
-        bounds.height
-      );
-
-      // Stage 정보 확인
-      if (this.app && this.app.stage) {
-        const stageWorldPos = this.app.stage.getGlobalPosition();
-        console.log("🔵 [배경이미지] Stage 정보:");
-        console.log(
-          "  - stage position:",
-          this.app.stage.position.x,
-          this.app.stage.position.y
-        );
-        console.log(
-          "  - stage world position:",
-          stageWorldPos.x,
-          stageWorldPos.y
-        );
-        console.log(
-          "  - stage pivot:",
-          this.app.stage.pivot.x,
-          this.app.stage.pivot.y
-        );
-        console.log(
-          "  - screen size:",
-          this.app.screen.width,
-          "x",
-          this.app.screen.height
-        );
-        console.log(
-          "  - renderer size:",
-          this.app.renderer.width,
-          "x",
-          this.app.renderer.height
-        );
-      }
-
-      // BackgroundLayer 정보 확인
-      if (this.backgroundLayer) {
-        const layerWorldPos = this.backgroundLayer.getGlobalPosition();
-        const layerBounds = this.backgroundLayer.getBounds();
-        console.log("🔵 [배경이미지] BackgroundLayer 정보:");
-        console.log(
-          "  - layer position:",
-          this.backgroundLayer.position.x,
-          this.backgroundLayer.position.y
-        );
-        console.log(
-          "  - layer world position:",
-          layerWorldPos.x,
-          layerWorldPos.y
-        );
-        console.log(
-          "  - layer bounds:",
-          layerBounds.x,
-          layerBounds.y,
-          layerBounds.width,
-          "x",
-          layerBounds.height
-        );
-      }
-
       // 배경 이미지가 정확히 (0, 0)에 위치하도록 강제 설정
       // resize 후에도 위치가 변경되지 않도록 보장
       this.backgroundLayer.position.set(0, 0);
       this.backgroundSprite.position.set(0, 0);
       this.backgroundSprite.anchor.set(0, 0);
 
-      // 최종 확인
+      // 최종 확인 (에러만 출력)
       const finalWorldPos = this.backgroundSprite.getGlobalPosition();
       const finalBounds = this.backgroundSprite.getBounds();
-      console.log("🔵 [배경이미지] 최종 강제 설정 후:");
-      console.log(
-        "  - backgroundLayer position:",
-        this.backgroundLayer.position.x,
-        this.backgroundLayer.position.y
-      );
-      console.log(
-        "  - backgroundSprite position:",
-        this.backgroundSprite.position.x,
-        this.backgroundSprite.position.y
-      );
-      console.log(
-        "  - backgroundSprite world position:",
-        finalWorldPos.x,
-        finalWorldPos.y
-      );
-      console.log(
-        "  - backgroundSprite bounds:",
-        finalBounds.x,
-        finalBounds.y,
-        finalBounds.width,
-        "x",
-        finalBounds.height
-      );
 
       if (Math.abs(finalWorldPos.x) > 0.1 || Math.abs(finalWorldPos.y) > 0.1) {
         console.error(
@@ -2453,25 +2411,11 @@ export class CanvasManager {
         );
         // bounds가 (0, 0)이 아니면 backgroundLayer 위치를 조정
         this.backgroundLayer.position.set(-finalBounds.x, -finalBounds.y);
-        console.log(
-          "🔵 [배경이미지] BackgroundLayer 위치를 bounds에 맞춰 조정:",
-          this.backgroundLayer.position.x,
-          this.backgroundLayer.position.y
-        );
-
-        // 조정 후 다시 확인
-        const adjustedBounds = this.backgroundSprite.getBounds();
-        console.log(
-          "🔵 [배경이미지] 조정 후 bounds:",
-          adjustedBounds.x,
-          adjustedBounds.y
-        );
       }
     }
 
     // 배경 이미지 적용 완료 이벤트 발생
     this.emitBackgroundTransformChange();
-    console.log("✅ [배경이미지] applyBackgroundTexture 완료");
   }
 
   private calculateFitScaleForSize(width: number, height: number): number {
