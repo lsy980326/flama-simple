@@ -1,8 +1,10 @@
 import React from "react";
 import { RealTimeDrawingManager } from "../collaboration/RealTimeDrawingManager";
+import { CanvasViewerManager } from "../collaboration/CanvasViewerManager";
 import { User, WebRTCConfig } from "../types";
 import { CanvasThumbnailNavigator } from "./CanvasThumbnailNavigator";
 import { WEBTOON_WIDTH_OPTIONS } from "./WebtoonViewer";
+import { CanvasViewer } from "./CanvasViewer";
 
 // 디버깅용 뷰포트 좌표 오버레이 컴포넌트
 const ViewportDebugOverlay: React.FC<{
@@ -88,7 +90,8 @@ export interface LiveCollabCanvasProps {
   showToolbar?: boolean;
   showThumbnail?: boolean; // 미리보기 네비게이션 표시 여부
   thumbnailContainerRef?: React.RefObject<HTMLDivElement | null>; // 스크롤 가능한 컨테이너 ref
-  onReady?: (api: { manager: RealTimeDrawingManager }) => void;
+  readOnly?: boolean; // 읽기 전용 모드 (Canvas 2D 기반 경량 뷰어 사용)
+  onReady?: (api: { manager: RealTimeDrawingManager | CanvasViewerManager }) => void;
   onError?: (error: unknown) => void;
 }
 
@@ -109,9 +112,11 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
   showToolbar = true,
   showThumbnail = true,
   thumbnailContainerRef,
+  readOnly = false,
   onReady,
   onError,
 }) => {
+  // 모든 hooks는 항상 호출되어야 함 (React Hooks 규칙)
   const containerRef = React.useRef<HTMLDivElement>(null);
   const internalThumbnailContainer = React.useRef<HTMLDivElement>(null);
   const backgroundFileInputRef = React.useRef<HTMLInputElement>(null);
@@ -275,9 +280,6 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
     if (scrollContainer) {
       const scrollContainerRef = { current: scrollContainer } as React.RefObject<HTMLDivElement>;
       manager.setScrollContainer(scrollContainerRef);
-      console.log("🟡 [LiveCollabCanvas] 스크롤 컨테이너 설정 완료");
-    } else {
-      console.warn("🟡 [LiveCollabCanvas] 스크롤 컨테이너를 찾을 수 없음");
     }
   }, [manager, thumbnailContainerRef, internalThumbnailContainer]);
 
@@ -289,7 +291,6 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
       const canvasManager = manager.getCanvasManager();
       if (canvasManager) {
         const size = canvasManager.getCanvasSize();
-        console.log("🟡 [LiveCollabCanvas] 캔버스 크기 업데이트:", size);
         setCanvasSize(size);
       }
     };
@@ -305,10 +306,6 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
     const checkBackgroundChange = () => {
       const currentHasBackground = manager.hasBackgroundImage();
       if (currentHasBackground !== hasBackground) {
-        console.log("🟡 [LiveCollabCanvas] 배경 이미지 상태 변경 감지:", {
-          이전: hasBackground,
-          현재: currentHasBackground,
-        });
         setHasBackground(currentHasBackground);
         
         // 배경 이미지가 제거되었을 때 캔버스 크기 업데이트
@@ -317,7 +314,6 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
             const canvasManager = manager.getCanvasManager();
             if (canvasManager) {
               const size = canvasManager.getCanvasSize();
-              console.log("🟡 [LiveCollabCanvas] 배경 제거 후 캔버스 크기:", size);
               setCanvasSize(size);
             }
           }, 150);
@@ -479,52 +475,36 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
       
       // 배경 이미지가 (0, 0)에서 시작하도록 스크롤을 (0, 0)으로 리셋
       // 실제 스크롤 컨테이너를 찾아서 리셋
-      console.log("🔵 [LiveCollabCanvas] 배경 이미지 로드 후 스크롤 리셋 시작");
       const resetScroll = () => {
         // thumbnailContainer가 실제 스크롤 컨테이너인 경우
         const scrollContainer = thumbnailContainer?.current || internalThumbnailContainer.current;
         if (scrollContainer) {
-          console.log("🔵 [LiveCollabCanvas] thumbnailContainer 찾음, 현재 scrollTop:", scrollContainer.scrollTop, "scrollHeight:", scrollContainer.scrollHeight, "clientHeight:", scrollContainer.clientHeight);
           scrollContainer.scrollTo({ top: 0, left: 0, behavior: 'auto' });
           scrollContainer.scrollTop = 0;
           scrollContainer.scrollLeft = 0;
-          console.log("🔵 [LiveCollabCanvas] thumbnailContainer 스크롤 리셋 완료, scrollTop:", scrollContainer.scrollTop);
-        } else {
-          console.log("🔵 [LiveCollabCanvas] thumbnailContainer 없음, 부모 요소 확인");
         }
         
         // containerRef도 확인
         if (containerRef.current) {
-          console.log("🔵 [LiveCollabCanvas] containerRef 찾음, 현재 scrollTop:", containerRef.current.scrollTop);
           containerRef.current.scrollTo({ top: 0, left: 0, behavior: 'auto' });
           containerRef.current.scrollTop = 0;
           containerRef.current.scrollLeft = 0;
-          console.log("🔵 [LiveCollabCanvas] containerRef 스크롤 리셋 완료, scrollTop:", containerRef.current.scrollTop);
         }
         
         // 부모 요소들도 확인 (실제 스크롤 컨테이너가 부모일 수 있음)
         let parent = containerRef.current?.parentElement;
-        let found = false;
         let depth = 0;
         while (parent && depth < 10) {
           const style = window.getComputedStyle(parent);
           if (style.overflow === 'auto' || style.overflow === 'scroll' || 
               style.overflowY === 'auto' || style.overflowY === 'scroll' ||
               parent.scrollHeight > parent.clientHeight) {
-            console.log(`🔵 [LiveCollabCanvas] 부모 스크롤 컨테이너 (depth ${depth}) 찾음, 현재 scrollTop:`, parent.scrollTop, "scrollHeight:", parent.scrollHeight, "clientHeight:", parent.clientHeight);
             parent.scrollTo({ top: 0, left: 0, behavior: 'auto' });
             parent.scrollTop = 0;
             parent.scrollLeft = 0;
-            console.log(`🔵 [LiveCollabCanvas] 부모 스크롤 (depth ${depth}) 리셋 완료, scrollTop:`, parent.scrollTop);
-            found = true;
-            // break 제거 - 모든 스크롤 컨테이너 리셋
           }
           parent = parent.parentElement;
           depth++;
-        }
-        
-        if (!found && !scrollContainer) {
-          console.warn("⚠️ [LiveCollabCanvas] 스크롤 컨테이너를 찾을 수 없음");
         }
       };
       
@@ -533,12 +513,10 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
       
       // 캔버스 크기 조정이 완료된 후에도 다시 한 번 리셋 (안전장치)
       setTimeout(() => {
-        console.log("🔵 [LiveCollabCanvas] 100ms 후 스크롤 리셋 재시도");
         resetScroll();
       }, 100);
       
       setTimeout(() => {
-        console.log("🔵 [LiveCollabCanvas] 300ms 후 스크롤 리셋 재시도");
         resetScroll();
       }, 300);
     } catch (error) {
@@ -581,18 +559,7 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
         viewportX = scrollContainer.scrollLeft + scrollContainer.clientWidth / 2;
         viewportY = scrollContainer.scrollTop + scrollContainer.clientHeight / 2;
         
-        console.log("🔵 [오버레이] 스크롤 컨테이너:", {
-          scrollLeft: scrollContainer.scrollLeft,
-          scrollTop: scrollContainer.scrollTop,
-          clientWidth: scrollContainer.clientWidth,
-          clientHeight: scrollContainer.clientHeight,
-          scrollWidth: scrollContainer.scrollWidth,
-          scrollHeight: scrollContainer.scrollHeight,
-          viewportX,
-          viewportY,
-        });
-      } else {
-        console.warn("🔵 [오버레이] 스크롤 컨테이너를 찾을 수 없음");
+        // 오버레이 이미지 추가 시 스크롤 위치 계산
       }
 
       // 캔버스 가로 크기를 가져와서 maxWidth로 설정
@@ -761,6 +728,22 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
   // 미리보기용 컨테이너 ref (외부에서 제공되지 않으면 내부 ref 사용)
   const thumbnailContainer = thumbnailContainerRef || internalThumbnailContainer;
 
+  // readOnly 모드일 때는 CanvasViewer 사용
+  if (readOnly) {
+    return (
+      <CanvasViewer
+        serverUrl={serverUrl}
+        roomId={roomId}
+        user={user}
+        width={width}
+        height={height}
+        canvasWidth={canvasWidth}
+        onReady={onReady as any}
+        onError={onError}
+      />
+    );
+  }
+
   return (
     <>
       <div style={{ display: "inline-flex", gap: 16 }}>
@@ -873,7 +856,11 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
             value={color}
             onChange={(e) => handleColor(e.target.value)}
           />
-          <button onClick={() => manager?.clearCanvas()}>캔버스 지우기</button>
+          <button onClick={async () => {
+            if (manager && 'clearCanvas' in manager) {
+              await (manager as any).clearCanvas();
+            }
+          }}>캔버스 지우기</button>
           <div style={{ borderTop: "1px solid #ccc", paddingTop: 12 }}>
             <input
               ref={backgroundFileInputRef}
