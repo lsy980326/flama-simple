@@ -9,7 +9,8 @@ import { CanvasViewer } from "./CanvasViewer";
 // 디버깅용 뷰포트 좌표 오버레이 컴포넌트
 const ViewportDebugOverlay: React.FC<{
   containerRef: React.RefObject<HTMLDivElement | null>;
-}> = ({ containerRef }) => {
+  manager?: RealTimeDrawingManager | null;
+}> = ({ containerRef, manager }) => {
   const [scrollInfo, setScrollInfo] = React.useState({
     scrollLeft: 0,
     scrollTop: 0,
@@ -18,6 +19,13 @@ const ViewportDebugOverlay: React.FC<{
     scrollWidth: 0,
     scrollHeight: 0,
   });
+
+  // 배경 이미지 정보 가져오기
+  const [backgroundInfo, setBackgroundInfo] = React.useState<{
+    originalSize: { width: number; height: number } | null;
+    scaledSize: { width: number; height: number } | null;
+    scale: number;
+  } | null>(null);
 
   React.useEffect(() => {
     const container = containerRef.current;
@@ -44,6 +52,43 @@ const ViewportDebugOverlay: React.FC<{
     };
   }, [containerRef]);
 
+  React.useEffect(() => {
+    if (!manager) {
+      setBackgroundInfo(null);
+      return;
+    }
+
+    const updateBackgroundInfo = () => {
+      const canvasManager = manager.getCanvasManager();
+      if (!canvasManager) {
+        setBackgroundInfo(null);
+        return;
+      }
+
+      const bgState = canvasManager.getBackgroundState();
+      if (bgState && bgState.originalSize) {
+        const scale = bgState.scale || 1;
+        setBackgroundInfo({
+          originalSize: bgState.originalSize,
+          scaledSize: {
+            width: bgState.originalSize.width * scale,
+            height: bgState.originalSize.height * scale,
+          },
+          scale: scale,
+        });
+      } else {
+        setBackgroundInfo(null);
+      }
+    };
+
+    updateBackgroundInfo();
+
+    // 주기적으로 업데이트 (배경 이미지 변경 감지)
+    const interval = setInterval(updateBackgroundInfo, 500);
+    return () => clearInterval(interval);
+  }, [manager]);
+
+  // early return은 Hook 호출 이후에 위치해야 함
   const container = containerRef.current;
   if (!container) return null;
 
@@ -68,12 +113,52 @@ const ViewportDebugOverlay: React.FC<{
         maxWidth: "300px",
       }}
     >
-      <div style={{ fontWeight: "bold", marginBottom: "4px" }}>캔버스 뷰포트:</div>
-      <div>Scroll: ({Math.round(scrollInfo.scrollLeft)}, {Math.round(scrollInfo.scrollTop)})</div>
-      <div>Viewport: {scrollInfo.clientWidth}x{scrollInfo.clientHeight}</div>
-      <div>Content: {scrollInfo.scrollWidth}x{scrollInfo.scrollHeight}</div>
-      <div>Top-Left: ({Math.round(scrollInfo.scrollLeft)}, {Math.round(scrollInfo.scrollTop)})</div>
-      <div>Bottom-Right: ({Math.round(scrollInfo.scrollLeft + scrollInfo.clientWidth)}, {Math.round(scrollInfo.scrollTop + scrollInfo.clientHeight)})</div>
+      <div style={{ fontWeight: "bold", marginBottom: "4px" }}>
+        캔버스 뷰포트:
+      </div>
+      <div>
+        Scroll: ({Math.round(scrollInfo.scrollLeft)},{" "}
+        {Math.round(scrollInfo.scrollTop)})
+      </div>
+      <div>
+        Viewport: {scrollInfo.clientWidth}x{scrollInfo.clientHeight}
+      </div>
+      <div>
+        Content: {scrollInfo.scrollWidth}x{scrollInfo.scrollHeight}
+      </div>
+      <div>
+        Top-Left: ({Math.round(scrollInfo.scrollLeft)},{" "}
+        {Math.round(scrollInfo.scrollTop)})
+      </div>
+      <div>
+        Bottom-Right: (
+        {Math.round(scrollInfo.scrollLeft + scrollInfo.clientWidth)},{" "}
+        {Math.round(scrollInfo.scrollTop + scrollInfo.clientHeight)})
+      </div>
+      {backgroundInfo &&
+        backgroundInfo.originalSize &&
+        backgroundInfo.scaledSize && (
+          <>
+            <div
+              style={{
+                marginTop: "8px",
+                borderTop: "1px solid rgba(255,255,255,0.3)",
+                paddingTop: "4px",
+              }}
+            >
+              <div style={{ fontWeight: "bold" }}>배경 이미지:</div>
+              <div>
+                원본: {backgroundInfo.originalSize.width}x
+                {backgroundInfo.originalSize.height}
+              </div>
+              <div>스케일: {backgroundInfo.scale.toFixed(4)}</div>
+              <div>
+                표시 크기: {Math.round(backgroundInfo.scaledSize.width)}x
+                {Math.round(backgroundInfo.scaledSize.height)}
+              </div>
+            </div>
+          </>
+        )}
     </div>
   );
 };
@@ -91,7 +176,9 @@ export interface LiveCollabCanvasProps {
   showThumbnail?: boolean; // 미리보기 네비게이션 표시 여부
   thumbnailContainerRef?: React.RefObject<HTMLDivElement | null>; // 스크롤 가능한 컨테이너 ref
   readOnly?: boolean; // 읽기 전용 모드 (Canvas 2D 기반 경량 뷰어 사용)
-  onReady?: (api: { manager: RealTimeDrawingManager | CanvasViewerManager }) => void;
+  onReady?: (api: {
+    manager: RealTimeDrawingManager | CanvasViewerManager;
+  }) => void;
   onError?: (error: unknown) => void;
 }
 
@@ -135,8 +222,12 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
   >("brush");
   const [isTransformManual, setIsTransformManual] = React.useState(false);
   const [isTransformHotkey, setIsTransformHotkey] = React.useState(false);
-  const [currentCanvasWidth, setCurrentCanvasWidth] = React.useState<number>(canvasWidth);
-  const [canvasSize, setCanvasSize] = React.useState({ width: width, height: height });
+  const [currentCanvasWidth, setCurrentCanvasWidth] =
+    React.useState<number>(canvasWidth);
+  const [canvasSize, setCanvasSize] = React.useState({
+    width: width,
+    height: height,
+  });
   const hasTransformTarget = React.useMemo(
     () => hasBackground || hasOverlay,
     [hasBackground, hasOverlay]
@@ -159,15 +250,38 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
     webrtcRef.current = webrtcConfig;
   }, [webrtcConfig]);
 
-  // 1) 매니저 초기화
+  // 1) 매니저 초기화 (UI 레이아웃이 안정화된 후)
   React.useEffect(() => {
     let isMounted = true;
     let localManager: RealTimeDrawingManager | null = null;
 
-    if (!containerRef.current) return;
+    if (!containerRef.current || !internalThumbnailContainer.current) return;
 
-    const timeout = setTimeout(() => {
+    // UI 레이아웃이 안정화될 때까지 대기
+    const waitForLayout = () => {
+      return new Promise<void>((resolve) => {
+        // 여러 프레임을 기다려서 레이아웃이 완전히 안정화되도록 함
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              resolve();
+            });
+          });
+        });
+      });
+    };
+
+    const initManager = async () => {
+      // 레이아웃 안정화 대기
+      await waitForLayout();
+
       if (!containerRef.current || !isMounted) return;
+
+      // 추가로 짧은 지연 (DOM 업데이트 완료 보장)
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      if (!containerRef.current || !isMounted) return;
+
       try {
         localManager = new RealTimeDrawingManager(
           {
@@ -184,6 +298,30 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
           .then(() => {
             if (!isMounted || !localManager) return;
             setManager(localManager);
+
+            // 캔버스 초기화 직후 스크롤 위치를 (0, 0)으로 강제 리셋
+            const resetScrollOnInit = () => {
+              const scrollContainer =
+                thumbnailContainerRef?.current ||
+                internalThumbnailContainer.current;
+              if (scrollContainer) {
+                scrollContainer.scrollTo({ top: 0, left: 0, behavior: "auto" });
+                scrollContainer.scrollTop = 0;
+                scrollContainer.scrollLeft = 0;
+              }
+            };
+
+            // 여러 시점에서 스크롤 리셋 (타이밍 문제 해결)
+            requestAnimationFrame(() => {
+              resetScrollOnInit();
+              requestAnimationFrame(() => {
+                resetScrollOnInit();
+                setTimeout(() => {
+                  resetScrollOnInit();
+                }, 100);
+              });
+            });
+
             // 스크롤 컨테이너 ref를 manager에 설정 (오버레이 이미지 추가 시 뷰포트 위치 계산용)
             // internalThumbnailContainer는 아직 마운트되지 않았을 수 있으므로 나중에 별도로 설정
             readyRef.current?.({ manager: localManager });
@@ -194,11 +332,12 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
       } catch (e) {
         errorRef.current?.(e);
       }
-    }, 50);
+    };
+
+    initManager();
 
     return () => {
       isMounted = false;
-      clearTimeout(timeout);
       try {
         localManager?.disconnect();
       } catch {}
@@ -261,7 +400,7 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
   React.useEffect(() => {
     if (!manager) return;
     manager.setCanvasWidth(currentCanvasWidth, 690); // 기본값 690 사용
-    
+
     // 캔버스 크기 업데이트 (비동기로 처리하여 resize 완료 후 크기 가져오기)
     setTimeout(() => {
       const canvasManager = manager.getCanvasManager();
@@ -276,9 +415,12 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
   // thumbnailContainer는 나중에 정의되므로, 여기서는 thumbnailContainerRef를 직접 사용
   React.useEffect(() => {
     if (!manager) return;
-    const scrollContainer = thumbnailContainerRef?.current || internalThumbnailContainer.current;
+    const scrollContainer =
+      thumbnailContainerRef?.current || internalThumbnailContainer.current;
     if (scrollContainer) {
-      const scrollContainerRef = { current: scrollContainer } as React.RefObject<HTMLDivElement>;
+      const scrollContainerRef = {
+        current: scrollContainer,
+      } as React.RefObject<HTMLDivElement>;
       manager.setScrollContainer(scrollContainerRef);
     }
   }, [manager, thumbnailContainerRef, internalThumbnailContainer]);
@@ -286,28 +428,156 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
   // 배경 이미지 변경 시 캔버스 크기 업데이트
   React.useEffect(() => {
     if (!manager) return;
-    
+
     const updateCanvasSize = () => {
       const canvasManager = manager.getCanvasManager();
       if (canvasManager) {
         const size = canvasManager.getCanvasSize();
         setCanvasSize(size);
+        // 스크롤 컨테이너 높이는 고정하므로 여기서는 업데이트하지 않음
       }
     };
-    
+
     // 배경 이미지 로드/제거 후 크기 업데이트
-    setTimeout(updateCanvasSize, 100);
+    const timeout1 = setTimeout(updateCanvasSize, 200);
+    const timeout2 = setTimeout(updateCanvasSize, 500);
+    const timeout3 = setTimeout(updateCanvasSize, 1000);
+
+    return () => {
+      clearTimeout(timeout1);
+      clearTimeout(timeout2);
+      clearTimeout(timeout3);
+    };
   }, [manager, hasBackground, currentCanvasWidth]);
+
+  /**
+   * 브라우저 리사이즈/줌 시 스크롤 위치 조정
+   *
+   * 배경 이미지가 있을 때만 활성화됩니다.
+   * 실제 브라우저 창 크기 변경 시에만 스크롤을 리셋하며,
+   * UI 텍스트 변경 등으로 인한 미세한 레이아웃 변화는 무시합니다.
+   *
+   * ResizeObserver는 사용하지 않습니다 - UI 변경으로 인한 불필요한 스크롤 리셋을 방지하기 위해.
+   */
+  React.useEffect(() => {
+    if (!hasBackground) return;
+
+    let lastViewportWidth = 0;
+    let lastViewportHeight = 0;
+    let resizeTimeout: NodeJS.Timeout | null = null;
+
+    /**
+     * 스크롤 위치를 (0, 0)으로 리셋합니다.
+     * 배경 이미지 로드 시에만 호출되며, 사용자가 의도적으로 스크롤한 경우는 리셋하지 않습니다.
+     */
+    const resetScrollToTop = () => {
+      const scrollContainer =
+        thumbnailContainerRef?.current || internalThumbnailContainer.current;
+      if (!scrollContainer) return;
+
+      // 배경 이미지는 항상 (0, 0)에서 시작하므로 스크롤도 (0, 0)으로 강제 리셋
+      scrollContainer.scrollTo({ top: 0, left: 0, behavior: "auto" });
+      scrollContainer.scrollTop = 0;
+      scrollContainer.scrollLeft = 0;
+
+      // 추가로 강제 설정 (브라우저 호환성을 위해)
+      if (scrollContainer.scrollTop !== 0 || scrollContainer.scrollLeft !== 0) {
+        scrollContainer.scrollTop = 0;
+        scrollContainer.scrollLeft = 0;
+      }
+
+      // 부모 요소들도 확인 (실제 스크롤 컨테이너가 부모일 수 있음)
+      let parent = scrollContainer.parentElement;
+      let depth = 0;
+      while (parent && depth < 5) {
+        const style = window.getComputedStyle(parent);
+        if (
+          style.overflow === "auto" ||
+          style.overflow === "scroll" ||
+          style.overflowY === "auto" ||
+          style.overflowY === "scroll"
+        ) {
+          if (parent.scrollTop > 0 || parent.scrollLeft > 0) {
+            parent.scrollTo({ top: 0, left: 0, behavior: "auto" });
+            parent.scrollTop = 0;
+            parent.scrollLeft = 0;
+          }
+        }
+        parent = parent.parentElement;
+        depth++;
+      }
+    };
+
+    /**
+     * 브라우저 창 크기 변경 시 호출됩니다.
+     * 실제 뷰포트 크기가 변경되었을 때만 스크롤을 리셋합니다.
+     * UI 텍스트 변경 등으로 인한 미세한 레이아웃 변화는 무시합니다.
+     */
+    const handleResize = () => {
+      // 디바운싱: 리사이즈 이벤트가 연속으로 발생하는 것을 방지
+      if (resizeTimeout) {
+        clearTimeout(resizeTimeout);
+      }
+
+      resizeTimeout = setTimeout(() => {
+        const scrollContainer =
+          thumbnailContainerRef?.current || internalThumbnailContainer.current;
+        if (!scrollContainer) return;
+
+        const currentViewportWidth = scrollContainer.clientWidth;
+        const currentViewportHeight = scrollContainer.clientHeight;
+
+        // 뷰포트 크기가 실제로 변경되었는지 확인
+        const viewportChanged =
+          lastViewportWidth !== 0 &&
+          lastViewportHeight !== 0 &&
+          (lastViewportWidth !== currentViewportWidth ||
+            lastViewportHeight !== currentViewportHeight);
+
+        // 뷰포트 크기가 실제로 변경되었을 때만 스크롤 리셋
+        // 사용자가 의도적으로 스크롤한 경우는 리셋하지 않음
+        if (viewportChanged) {
+          resetScrollToTop();
+        }
+
+        lastViewportWidth = currentViewportWidth;
+        lastViewportHeight = currentViewportHeight;
+      }, 150); // 150ms 디바운싱
+    };
+
+    // 초기 뷰포트 크기 저장
+    const scrollContainer =
+      thumbnailContainerRef?.current || internalThumbnailContainer.current;
+    if (scrollContainer) {
+      lastViewportWidth = scrollContainer.clientWidth;
+      lastViewportHeight = scrollContainer.clientHeight;
+
+      // 초기 로드 시 스크롤 리셋은 배경 이미지 로드 시에만 수행
+      // 여기서는 리셋하지 않음 (사용자가 스크롤한 경우를 보존)
+    }
+
+    // window.resize 이벤트만 사용 (실제 브라우저 창 크기 변경 시에만 발생)
+    // ResizeObserver는 제거 - UI 텍스트 변경 등으로 인한 미세한 레이아웃 변화까지 감지하여
+    // 불필요하게 스크롤을 리셋하는 것을 방지
+    window.addEventListener("resize", handleResize);
+
+    return () => {
+      window.removeEventListener("resize", handleResize);
+      if (resizeTimeout) {
+        clearTimeout(resizeTimeout);
+      }
+    };
+  }, [hasBackground, thumbnailContainerRef, internalThumbnailContainer]);
 
   // 배경 이미지 상태 동기화 (외부에서 removeBackgroundImage 호출 시 감지)
   React.useEffect(() => {
     if (!manager) return;
-    
+
     const checkBackgroundChange = () => {
       const currentHasBackground = manager.hasBackgroundImage();
       if (currentHasBackground !== hasBackground) {
         setHasBackground(currentHasBackground);
-        
+
         // 배경 이미지가 제거되었을 때 캔버스 크기 업데이트
         if (!currentHasBackground) {
           setTimeout(() => {
@@ -320,10 +590,10 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
         }
       }
     };
-    
+
     // 주기적으로 배경 이미지 상태 확인 (배경 이미지가 외부에서 제거될 수 있음)
     const interval = setInterval(checkBackgroundChange, 300);
-    
+
     return () => clearInterval(interval);
   }, [manager, hasBackground]);
 
@@ -455,51 +725,61 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
     }
 
     try {
-      // 가로 크기 제한 없음 (기본 동작)
-      await manager.loadBackgroundImage(file);
+      // 현재 캔버스 가로 크기에 맞춰 이미지 리사이즈
+      await manager.loadBackgroundImage(file, currentCanvasWidth);
       setHasBackground(true);
       const applied = manager.getBackgroundScale();
       setBackgroundScale(Number(applied.toFixed(2)));
-      
+
       // 배경 이미지 로드 후 현재 캔버스 가로 크기에 맞춰 조절
       manager.setCanvasWidth(currentCanvasWidth, 690); // 기본값 690 사용
-      
+
       // 캔버스 크기 업데이트
-      setTimeout(() => {
+      const updateCanvasSize = () => {
         const canvasManager = manager.getCanvasManager();
         if (canvasManager) {
           const size = canvasManager.getCanvasSize();
           setCanvasSize(size);
         }
-      }, 100);
-      
+      };
+
+      // 여러 시점에서 업데이트 시도 (타이밍 문제 해결)
+      setTimeout(updateCanvasSize, 200);
+      setTimeout(updateCanvasSize, 500);
+      setTimeout(updateCanvasSize, 1000);
+
       // 배경 이미지가 (0, 0)에서 시작하도록 스크롤을 (0, 0)으로 리셋
       // 실제 스크롤 컨테이너를 찾아서 리셋
       const resetScroll = () => {
         // thumbnailContainer가 실제 스크롤 컨테이너인 경우
-        const scrollContainer = thumbnailContainer?.current || internalThumbnailContainer.current;
+        const scrollContainer =
+          thumbnailContainer?.current || internalThumbnailContainer.current;
         if (scrollContainer) {
-          scrollContainer.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+          scrollContainer.scrollTo({ top: 0, left: 0, behavior: "auto" });
           scrollContainer.scrollTop = 0;
           scrollContainer.scrollLeft = 0;
         }
-        
+
         // containerRef도 확인
         if (containerRef.current) {
-          containerRef.current.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+          containerRef.current.scrollTo({ top: 0, left: 0, behavior: "auto" });
           containerRef.current.scrollTop = 0;
           containerRef.current.scrollLeft = 0;
         }
-        
+
         // 부모 요소들도 확인 (실제 스크롤 컨테이너가 부모일 수 있음)
         let parent = containerRef.current?.parentElement;
         let depth = 0;
         while (parent && depth < 10) {
           const style = window.getComputedStyle(parent);
-          if (style.overflow === 'auto' || style.overflow === 'scroll' || 
-              style.overflowY === 'auto' || style.overflowY === 'scroll' ||
-              parent.scrollHeight > parent.clientHeight) {
-            parent.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+          if (
+            style.overflow === "auto" ||
+            style.overflow === "scroll" ||
+            style.overflowY === "auto" ||
+            style.overflowY === "scroll" ||
+            parent.scrollHeight > parent.clientHeight
+          ) {
+            parent.scrollTo({ top: 0, left: 0, behavior: "auto" });
             parent.scrollTop = 0;
             parent.scrollLeft = 0;
           }
@@ -507,18 +787,23 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
           depth++;
         }
       };
-      
+
       // 즉시 리셋
       resetScroll();
-      
+
       // 캔버스 크기 조정이 완료된 후에도 다시 한 번 리셋 (안전장치)
       setTimeout(() => {
         resetScroll();
       }, 100);
-      
+
       setTimeout(() => {
         resetScroll();
       }, 300);
+
+      // setCanvasWidth 호출 후에도 스크롤 리셋
+      setTimeout(() => {
+        resetScroll();
+      }, 500);
     } catch (error) {
       console.error("배경 이미지 로딩 실패:", error);
       alert("배경 이미지를 불러오는 중 오류가 발생했습니다.");
@@ -549,16 +834,19 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
     try {
       // 현재 뷰포트 중앙 계산 (PIXI 캔버스의 절대 좌표)
       // internalThumbnailContainer가 실제 스크롤 컨테이너
-      const scrollContainer = thumbnailContainer?.current || internalThumbnailContainer.current;
+      const scrollContainer =
+        thumbnailContainer?.current || internalThumbnailContainer.current;
       let viewportX: number | undefined;
       let viewportY: number | undefined;
-      
+
       if (scrollContainer) {
         // 스크롤 위치는 PIXI 캔버스의 절대 좌표와 직접 일치
         // 스크롤 위치 + 뷰포트 중앙 = PIXI 캔버스의 절대 좌표
-        viewportX = scrollContainer.scrollLeft + scrollContainer.clientWidth / 2;
-        viewportY = scrollContainer.scrollTop + scrollContainer.clientHeight / 2;
-        
+        viewportX =
+          scrollContainer.scrollLeft + scrollContainer.clientWidth / 2;
+        viewportY =
+          scrollContainer.scrollTop + scrollContainer.clientHeight / 2;
+
         // 오버레이 이미지 추가 시 스크롤 위치 계산
       }
 
@@ -567,19 +855,25 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
       const canvasManager = manager.getCanvasManager();
       let maxWidth: number | undefined;
       let maxHeight: number | undefined;
-      
+
       if (canvasManager) {
         const size = canvasManager.getCanvasSize();
         maxWidth = size.width; // 캔버스 가로 크기
         maxHeight = size.height; // 캔버스 세로 크기
       }
-      
+
       // 오버레이 이미지 추가 시 캔버스 가로 크기에 맞춰 리사이즈
       // 세로 크기를 넘지 않도록 제한
       for (const file of validFiles) {
         // maxWidth와 maxHeight를 전달하여 이미지 크기 제한
         // 가로와 세로 중 더 작은 제한을 적용하여 비율 유지
-        await manager.addImageFromFile(file, viewportX, viewportY, maxWidth, maxHeight);
+        await manager.addImageFromFile(
+          file,
+          viewportX,
+          viewportY,
+          maxWidth,
+          maxHeight
+        );
       }
       setHasOverlay(true);
     } catch (error) {
@@ -612,22 +906,22 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
       const canvasManager = manager.getCanvasManager();
       const currentSize = canvasManager.getCanvasSize();
       const currentWidth = currentSize.width;
-      
+
       manager.removeBackgroundImage();
       setHasBackground(false);
       setBackgroundScale(1);
-      
+
       // 배경 이미지 제거 후 명시적으로 기본 높이로 리셋
       // 배경 이미지가 없을 때는 기본 높이(600)를 사용
       const defaultHeight = 600;
       canvasManager.resize(currentWidth, defaultHeight);
-      
+
       // 캔버스 크기 업데이트
       setTimeout(() => {
         const size = canvasManager.getCanvasSize();
         setCanvasSize(size);
       }, 100);
-      
+
       if (!hasOverlay) {
         setIsTransformManual(false);
         setIsTransformHotkey(false);
@@ -670,50 +964,55 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
       setBackgroundScale(
         hasBg ? Number(manager.getBackgroundScale().toFixed(2)) : 1
       );
-      
+
       // 캔버스 크기 업데이트 및 렌더링 완료 대기
       const canvasManager = manager.getCanvasManager();
       if (canvasManager) {
         // 캔버스가 준비될 때까지 대기
         await canvasManager.waitForInitialization();
-        
+
         // 렌더링 강제 업데이트
         const app = (canvasManager as any).app;
         if (app && app.renderer && app.stage) {
           app.renderer.render(app.stage);
         }
-        
+
         // 캔버스 크기 업데이트
         const size = canvasManager.getCanvasSize();
         setCanvasSize(size);
-        
+
         // 큰 캔버스의 경우 추가 렌더링 대기
         if (size.height > 10000) {
           // 매우 큰 캔버스의 경우 추가 대기 시간
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          await new Promise((resolve) => setTimeout(resolve, 1000));
           const app = (canvasManager as any).app;
           if (app && app.renderer && app.stage) {
             app.renderer.render(app.stage);
           }
         }
       }
-      
+
       // 미리보기 업데이트를 위해 canvas-activated 이벤트 발생
       // 렌더링이 완전히 완료된 후 썸네일 생성
       if (showThumbnail && manager) {
-        const container = thumbnailContainer?.current || internalThumbnailContainer.current;
+        const container =
+          thumbnailContainer?.current || internalThumbnailContainer.current;
         if (container) {
           // 렌더링 완료를 보장하기 위해 충분한 지연 (큰 캔버스의 경우 더 긴 대기)
           const canvasManager = manager.getCanvasManager();
-          const size = canvasManager ? canvasManager.getCanvasSize() : { height: 0 };
+          const size = canvasManager
+            ? canvasManager.getCanvasSize()
+            : { height: 0 };
           const delay = size.height > 10000 ? 1500 : 500;
-          
+
           setTimeout(() => {
             (window as any).__activeCanvasManager = manager;
             (window as any).__activeCanvasContainer = container;
-            window.dispatchEvent(new CustomEvent('canvas-activated', { 
-              detail: { manager, container } 
-            }));
+            window.dispatchEvent(
+              new CustomEvent("canvas-activated", {
+                detail: { manager, container },
+              })
+            );
           }, delay);
         }
       }
@@ -726,7 +1025,8 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
   };
 
   // 미리보기용 컨테이너 ref (외부에서 제공되지 않으면 내부 ref 사용)
-  const thumbnailContainer = thumbnailContainerRef || internalThumbnailContainer;
+  const thumbnailContainer =
+    thumbnailContainerRef || internalThumbnailContainer;
 
   // readOnly 모드일 때는 CanvasViewer 사용
   if (readOnly) {
@@ -747,292 +1047,302 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
   return (
     <>
       <div style={{ display: "inline-flex", gap: 16 }}>
-      {showToolbar && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <label style={{ fontSize: 12 }}>도구 선택</label>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr 1fr 1fr",
-              gap: 4,
-            }}
-          >
-            <button
-              onClick={() => handleToolChange("brush")}
+        {showToolbar && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <label style={{ fontSize: 12 }}>도구 선택</label>
+            <div
               style={{
-                padding: "6px",
-                background: currentTool === "brush" ? "#4E6FF2" : "#eee",
-                color: currentTool === "brush" ? "white" : "black",
-                border: "none",
-                borderRadius: 4,
-                cursor: "pointer",
-                fontSize: 11,
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr 1fr",
+                gap: 4,
               }}
             >
-              ✏️ 브러시
-            </button>
-            <button
-              onClick={() => handleToolChange("eraser")}
-              style={{
-                padding: "6px",
-                background: currentTool === "eraser" ? "#4E6FF2" : "#eee",
-                color: currentTool === "eraser" ? "white" : "black",
-                border: "none",
-                borderRadius: 4,
-                cursor: "pointer",
-                fontSize: 11,
-              }}
-            >
-              🧹 지우개
-            </button>
-            <button
-              onClick={() => handleToolChange("text")}
-              style={{
-                padding: "6px",
-                background: currentTool === "text" ? "#4E6FF2" : "#eee",
-                color: currentTool === "text" ? "white" : "black",
-                border: "none",
-                borderRadius: 4,
-                cursor: "pointer",
-                fontSize: 11,
-              }}
-            >
-              📝 텍스트
-            </button>
-            <button
-              onClick={() => handleToolChange("rectangle")}
-              style={{
-                padding: "6px",
-                background: currentTool === "rectangle" ? "#4E6FF2" : "#eee",
-                color: currentTool === "rectangle" ? "white" : "black",
-                border: "none",
-                borderRadius: 4,
-                cursor: "pointer",
-                fontSize: 11,
-              }}
-            >
-              ▭ 사각형
-            </button>
-            <button
-              onClick={() => handleToolChange("circle")}
-              style={{
-                padding: "6px",
-                background: currentTool === "circle" ? "#4E6FF2" : "#eee",
-                color: currentTool === "circle" ? "white" : "black",
-                border: "none",
-                borderRadius: 4,
-                cursor: "pointer",
-                fontSize: 11,
-              }}
-            >
-              ⭕ 원
-            </button>
-            <button
-              onClick={() => handleToolChange("line")}
-              style={{
-                padding: "6px",
-                background: currentTool === "line" ? "#4E6FF2" : "#eee",
-                color: currentTool === "line" ? "white" : "black",
-                border: "none",
-                borderRadius: 4,
-                cursor: "pointer",
-                fontSize: 11,
-              }}
-            >
-              ━ 선
-            </button>
-          </div>
-          <label style={{ fontSize: 12 }}>브러시 크기</label>
-          <input
-            type="range"
-            min={1}
-            max={30}
-            value={brushSize}
-            onChange={(e) => handleSize(parseInt(e.target.value))}
-          />
-          <label style={{ fontSize: 12 }}>색상</label>
-          <input
-            type="color"
-            value={color}
-            onChange={(e) => handleColor(e.target.value)}
-          />
-          <button onClick={async () => {
-            if (manager && 'clearCanvas' in manager) {
-              await (manager as any).clearCanvas();
-            }
-          }}>캔버스 지우기</button>
-          <div style={{ borderTop: "1px solid #ccc", paddingTop: 12 }}>
-            <input
-              ref={backgroundFileInputRef}
-              type="file"
-              accept="image/*"
-              style={{ display: "none" }}
-              onChange={handleBackgroundUpload}
-            />
-            <button onClick={() => backgroundFileInputRef.current?.click()}>
-              배경 이미지 불러오기
-            </button>
-            {hasBackground && (
-              <button onClick={handleRemoveImage} style={{ marginTop: 8 }}>
-                배경 이미지 제거
+              <button
+                onClick={() => handleToolChange("brush")}
+                style={{
+                  padding: "6px",
+                  background: currentTool === "brush" ? "#4E6FF2" : "#eee",
+                  color: currentTool === "brush" ? "white" : "black",
+                  border: "none",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                  fontSize: 11,
+                }}
+              >
+                ✏️ 브러시
               </button>
-            )}
-          </div>
-          <div style={{ borderTop: "1px solid #ccc", paddingTop: 12 }}>
-            <input
-              ref={overlayFileInputRef}
-              type="file"
-              accept="image/*"
-              multiple
-              style={{ display: "none" }}
-              onChange={handleOverlayUpload}
-            />
-            <button onClick={() => overlayFileInputRef.current?.click()}>
-              오버레이 이미지 추가
-            </button>
-            {hasOverlay && (
-              <div style={{ marginTop: 8, fontSize: 11, color: "#444" }}>
-                Ctrl 키를 누른 채 이미지를 드래그하면 이동할 수 있습니다.
-              </div>
-            )}
-          </div>
-          <div style={{ borderTop: "1px solid #ccc", paddingTop: 12 }}>
-            <label style={{ fontSize: 12, marginBottom: 6 }}>캔버스 가로 크기</label>
-            <select
-              value={currentCanvasWidth}
-              onChange={(e) => {
-                const newWidth = Number(e.target.value);
-                setCurrentCanvasWidth(newWidth);
-              }}
-              style={{ width: "100%", padding: "4px", fontSize: 12 }}
-            >
-              {WEBTOON_WIDTH_OPTIONS.map((w) => (
-                <option key={w} value={w}>
-                  {w}px
-                </option>
-              ))}
-            </select>
-          </div>
-          <div style={{ borderTop: "1px solid #ccc", paddingTop: 12 }}>
-            <label style={{ fontSize: 12, marginBottom: 6 }}>
-              캔버스 저장/불러오기
-            </label>
-            <button onClick={handleSaveCanvas} disabled={!manager}>
-              저장하기
-            </button>
-            <input
-              ref={loadFileInputRef}
-              type="file"
-              accept="application/json"
-              style={{ display: "none" }}
-              onChange={handleLoadCanvas}
-            />
-            <button
-              onClick={() => loadFileInputRef.current?.click()}
-              disabled={!manager}
-              style={{ marginTop: 8 }}
-            >
-              불러오기
-            </button>
-          </div>
-          <div
-            style={{ display: "flex", flexDirection: "column", gap: "4px" }}
-          >
-            <span>
-              Transform 모드: {effectiveTransformMode ? "ON" : "OFF"} (Alt+T
-              토글 / Ctrl 누른 채 유지)
-            </span>
-            <button
-              onClick={() => setIsTransformManual((prev) => !prev)}
-              disabled={!hasTransformTarget}
-            >
-              {effectiveTransformMode
-                ? "Transform 모드 종료"
-                : "Transform 모드 진입"}
-            </button>
-          </div>
-          <div style={{ marginTop: 12 }}>
-            <label>
-              배경 확대/축소: {backgroundScale.toFixed(2)}x
-            </label>
+              <button
+                onClick={() => handleToolChange("eraser")}
+                style={{
+                  padding: "6px",
+                  background: currentTool === "eraser" ? "#4E6FF2" : "#eee",
+                  color: currentTool === "eraser" ? "white" : "black",
+                  border: "none",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                  fontSize: 11,
+                }}
+              >
+                🧹 지우개
+              </button>
+              <button
+                onClick={() => handleToolChange("text")}
+                style={{
+                  padding: "6px",
+                  background: currentTool === "text" ? "#4E6FF2" : "#eee",
+                  color: currentTool === "text" ? "white" : "black",
+                  border: "none",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                  fontSize: 11,
+                }}
+              >
+                📝 텍스트
+              </button>
+              <button
+                onClick={() => handleToolChange("rectangle")}
+                style={{
+                  padding: "6px",
+                  background: currentTool === "rectangle" ? "#4E6FF2" : "#eee",
+                  color: currentTool === "rectangle" ? "white" : "black",
+                  border: "none",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                  fontSize: 11,
+                }}
+              >
+                ▭ 사각형
+              </button>
+              <button
+                onClick={() => handleToolChange("circle")}
+                style={{
+                  padding: "6px",
+                  background: currentTool === "circle" ? "#4E6FF2" : "#eee",
+                  color: currentTool === "circle" ? "white" : "black",
+                  border: "none",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                  fontSize: 11,
+                }}
+              >
+                ⭕ 원
+              </button>
+              <button
+                onClick={() => handleToolChange("line")}
+                style={{
+                  padding: "6px",
+                  background: currentTool === "line" ? "#4E6FF2" : "#eee",
+                  color: currentTool === "line" ? "white" : "black",
+                  border: "none",
+                  borderRadius: 4,
+                  cursor: "pointer",
+                  fontSize: 11,
+                }}
+              >
+                ━ 선
+              </button>
+            </div>
+            <label style={{ fontSize: 12 }}>브러시 크기</label>
             <input
               type="range"
-              min={0.1}
-              max={3}
-              step={0.01}
-              value={backgroundScale}
-              onChange={(e) =>
-                handleBackgroundScaleChange(parseFloat(e.target.value))
-              }
-              disabled={!hasBackground}
+              min={1}
+              max={30}
+              value={brushSize}
+              onChange={(e) => handleSize(parseInt(e.target.value))}
             />
-          </div>
-          <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
-            <button
-              onClick={handleResetBackgroundTransform}
-              disabled={!hasBackground || !effectiveTransformMode}
-            >
-              배경 초기화
-            </button>
-            <button
-              onClick={handleRemoveImage}
-              disabled={!hasBackground}
-            >
-              배경 제거
-            </button>
-          </div>
-        </div>
-      )}
-
-      <div
-        ref={internalThumbnailContainer}
-        style={{
-          width: canvasSize.width,
-          height: "auto",
-          maxHeight: "calc(100vh - 200px)",
-          border: "2px solid #333",
-          backgroundColor: "#000000",
-          cursor: "crosshair",
-          overflow: "auto",
-          margin: "0 auto",
-          position: "relative",
-        }}
-        onClick={() => {
-          // 캔버스 클릭 시 전역 상태에 이 manager 설정 및 미리보기 생성
-          if (manager && showThumbnail) {
-            const container = thumbnailContainer?.current || internalThumbnailContainer.current;
-            (window as any).__activeCanvasManager = manager;
-            (window as any).__activeCanvasContainer = container;
-            // 미리보기 생성 이벤트 발생
-            window.dispatchEvent(new CustomEvent('canvas-activated', { 
-              detail: { manager, container } 
-            }));
-          }
-        }}
-      >
-        <div
-          ref={containerRef}
-          style={{
-            width: canvasSize.width,
-            height: canvasSize.height,
-            backgroundColor: "#fff",
-            cursor: "crosshair",
-          }}
-        />
-        {showThumbnail && manager && (
-          <>
-            {/* 디버깅: 캔버스 뷰포트 좌표 표시 */}
-            {thumbnailContainer && thumbnailContainer.current && (
-              <ViewportDebugOverlay containerRef={thumbnailContainer} />
-            )}
-            <CanvasThumbnailNavigator
-              manager={manager}
-              containerRef={thumbnailContainer}
+            <label style={{ fontSize: 12 }}>색상</label>
+            <input
+              type="color"
+              value={color}
+              onChange={(e) => handleColor(e.target.value)}
             />
-          </>
+            <button
+              onClick={async () => {
+                if (manager && "clearCanvas" in manager) {
+                  await (manager as any).clearCanvas();
+                }
+              }}
+            >
+              캔버스 지우기
+            </button>
+            <div style={{ borderTop: "1px solid #ccc", paddingTop: 12 }}>
+              <input
+                ref={backgroundFileInputRef}
+                type="file"
+                accept="image/*"
+                style={{ display: "none" }}
+                onChange={handleBackgroundUpload}
+              />
+              <button onClick={() => backgroundFileInputRef.current?.click()}>
+                배경 이미지 불러오기
+              </button>
+              {hasBackground && (
+                <button onClick={handleRemoveImage} style={{ marginTop: 8 }}>
+                  배경 이미지 제거
+                </button>
+              )}
+            </div>
+            <div style={{ borderTop: "1px solid #ccc", paddingTop: 12 }}>
+              <input
+                ref={overlayFileInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                style={{ display: "none" }}
+                onChange={handleOverlayUpload}
+              />
+              <button onClick={() => overlayFileInputRef.current?.click()}>
+                오버레이 이미지 추가
+              </button>
+              {hasOverlay && (
+                <div style={{ marginTop: 8, fontSize: 11, color: "#444" }}>
+                  Ctrl 키를 누른 채 이미지를 드래그하면 이동할 수 있습니다.
+                </div>
+              )}
+            </div>
+            <div style={{ borderTop: "1px solid #ccc", paddingTop: 12 }}>
+              <label style={{ fontSize: 12, marginBottom: 6 }}>
+                캔버스 가로 크기
+              </label>
+              <select
+                value={currentCanvasWidth}
+                onChange={(e) => {
+                  const newWidth = Number(e.target.value);
+                  setCurrentCanvasWidth(newWidth);
+                }}
+                style={{ width: "100%", padding: "4px", fontSize: 12 }}
+              >
+                {WEBTOON_WIDTH_OPTIONS.map((w) => (
+                  <option key={w} value={w}>
+                    {w}px
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div style={{ borderTop: "1px solid #ccc", paddingTop: 12 }}>
+              <label style={{ fontSize: 12, marginBottom: 6 }}>
+                캔버스 저장/불러오기
+              </label>
+              <button onClick={handleSaveCanvas} disabled={!manager}>
+                저장하기
+              </button>
+              <input
+                ref={loadFileInputRef}
+                type="file"
+                accept="application/json"
+                style={{ display: "none" }}
+                onChange={handleLoadCanvas}
+              />
+              <button
+                onClick={() => loadFileInputRef.current?.click()}
+                disabled={!manager}
+                style={{ marginTop: 8 }}
+              >
+                불러오기
+              </button>
+            </div>
+            <div
+              style={{ display: "flex", flexDirection: "column", gap: "4px" }}
+            >
+              <span>
+                Transform 모드: {effectiveTransformMode ? "ON" : "OFF"} (Alt+T
+                토글 / Ctrl 누른 채 유지)
+              </span>
+              <button
+                onClick={() => setIsTransformManual((prev) => !prev)}
+                disabled={!hasTransformTarget}
+              >
+                {effectiveTransformMode
+                  ? "Transform 모드 종료"
+                  : "Transform 모드 진입"}
+              </button>
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <label>배경 확대/축소: {backgroundScale.toFixed(2)}x</label>
+              <input
+                type="range"
+                min={0.1}
+                max={3}
+                step={0.01}
+                value={backgroundScale}
+                onChange={(e) =>
+                  handleBackgroundScaleChange(parseFloat(e.target.value))
+                }
+                disabled={!hasBackground}
+              />
+            </div>
+            <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+              <button
+                onClick={handleResetBackgroundTransform}
+                disabled={!hasBackground || !effectiveTransformMode}
+              >
+                배경 초기화
+              </button>
+              <button onClick={handleRemoveImage} disabled={!hasBackground}>
+                배경 제거
+              </button>
+            </div>
+          </div>
         )}
+
+        <div
+          ref={internalThumbnailContainer}
+          style={{
+            width: `${canvasSize.width}px`,
+            height: "calc(100vh - 200px)",
+            maxHeight: "calc(100vh - 200px)",
+            border: "2px solid #333",
+            backgroundColor: "#000000",
+            cursor: "crosshair",
+            overflow: "auto",
+            margin: "0 auto",
+            position: "relative",
+          }}
+          onClick={() => {
+            // 캔버스 클릭 시 전역 상태에 이 manager 설정 및 미리보기 생성
+            if (manager && showThumbnail) {
+              const container =
+                thumbnailContainer?.current ||
+                internalThumbnailContainer.current;
+              (window as any).__activeCanvasManager = manager;
+              (window as any).__activeCanvasContainer = container;
+              // 미리보기 생성 이벤트 발생
+              window.dispatchEvent(
+                new CustomEvent("canvas-activated", {
+                  detail: { manager, container },
+                })
+              );
+            }
+          }}
+        >
+          <div
+            ref={containerRef}
+            style={{
+              width: `${canvasSize.width}px`,
+              height: `${canvasSize.height}px`,
+              minHeight: `${canvasSize.height}px`,
+              backgroundColor: "#fff",
+              cursor: "crosshair",
+              position: "relative",
+            }}
+          />
+          {showThumbnail && manager && (
+            <>
+              {/* 디버깅: 캔버스 뷰포트 좌표 표시 */}
+              {thumbnailContainer && thumbnailContainer.current && (
+                <ViewportDebugOverlay
+                  containerRef={thumbnailContainer}
+                  manager={manager}
+                />
+              )}
+              <CanvasThumbnailNavigator
+                manager={manager}
+                containerRef={thumbnailContainer}
+              />
+            </>
+          )}
+        </div>
       </div>
-    </div>
     </>
   );
 };

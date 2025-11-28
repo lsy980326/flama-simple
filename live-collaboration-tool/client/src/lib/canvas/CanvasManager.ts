@@ -11,6 +11,8 @@ export class CanvasManager {
   private backgroundSprite: PIXI.Sprite | null = null;
   private backgroundOriginalSize: { width: number; height: number } | null =
     null;
+  private backgroundTrueOriginalSize: { width: number; height: number } | null =
+    null; // 리사이즈 전 원본 이미지 크기
   private backgroundScale: number = 1;
   private backgroundDataUrl: string | null = null;
   private isBackgroundDragging: boolean = false;
@@ -228,7 +230,22 @@ export class CanvasManager {
         height,
         backgroundColor: 0xffffff,
         antialias: true,
-        resolution: window.devicePixelRatio || 1,
+        /**
+         * Resolution을 1로 고정하여 WebGL 렌더링 버퍼 크기 제한 문제 해결
+         *
+         * 문제:
+         * - WebGL 텍스처 최대 크기 제한: 대부분의 GPU/브라우저는 16,384px로 제한
+         * - DPR이 2일 때: 높이 14,802px × 2 = 29,604px → 제한 초과로 이미지 잘림
+         * - 브라우저 줌 100%에서 이미지가 중간부터 보이거나 잘리는 현상 발생
+         *
+         * 해결:
+         * - resolution을 1로 고정하면 물리적 픽셀과 1:1 매핑
+         * - 14,802px 그대로 렌더링되어 안전 제한(16,384px) 내에 들어옴
+         * - 비트맵 이미지이므로 화질 저하 영향 미미
+         *
+         * 참고: 모든 브라우저 줌 레벨에서 일관된 동작 보장
+         */
+        resolution: 1,
         autoDensity: true,
       })
       .then(() => {
@@ -1100,11 +1117,17 @@ export class CanvasManager {
       }
       case "shape": {
         // 도형 그리기 (일회성 작업)
-        if (data.tool && data.x2 !== undefined && data.y2 !== undefined && data.color) {
+        if (
+          data.tool &&
+          data.x2 !== undefined &&
+          data.y2 !== undefined &&
+          data.color
+        ) {
           try {
-            const color = typeof data.color === "string"
-              ? parseInt(data.color.replace("#", ""), 16)
-              : data.color;
+            const color =
+              typeof data.color === "string"
+                ? parseInt(data.color.replace("#", ""), 16)
+                : data.color;
             this.graphics.setStrokeStyle({
               width: data.brushSize || 2,
               color,
@@ -1112,7 +1135,12 @@ export class CanvasManager {
 
             switch (data.tool) {
               case "rectangle":
-                this.graphics.rect(data.x, data.y, data.x2 - data.x, data.y2 - data.y);
+                this.graphics.rect(
+                  data.x,
+                  data.y,
+                  data.x2 - data.x,
+                  data.y2 - data.y
+                );
                 this.graphics.stroke();
                 break;
               case "circle": {
@@ -1138,9 +1166,10 @@ export class CanvasManager {
         // PIXI.js Graphics에는 text() 메서드가 없으므로 PIXI.Text 객체를 생성
         if (data.text && data.fontSize && data.color && this.app) {
           try {
-            const color = typeof data.color === "string"
-              ? parseInt(data.color.replace("#", ""), 16)
-              : data.color;
+            const color =
+              typeof data.color === "string"
+                ? parseInt(data.color.replace("#", ""), 16)
+                : data.color;
             const textObj = new PIXI.Text({
               text: data.text,
               style: {
@@ -2219,6 +2248,10 @@ export class CanvasManager {
       // 이미지 정보 먼저 확인
       let texture = await this.createTextureFromDataUrl(dataUrl);
 
+      // 원본 이미지 크기 저장 (리사이즈 전)
+      const trueOriginalWidth = texture.width;
+      const trueOriginalHeight = texture.height;
+
       // 가로 크기 제한 적용
       if (maxWidth && texture && texture.width > maxWidth) {
         // 이미지를 리사이즈하기 위해 Image 객체로 다시 로드
@@ -2258,6 +2291,12 @@ export class CanvasManager {
       if (!texture) {
         throw new Error("이미지 텍스처 로드 실패");
       }
+
+      // 원본 이미지 크기 저장 (리사이즈 전)
+      this.backgroundTrueOriginalSize = {
+        width: trueOriginalWidth,
+        height: trueOriginalHeight,
+      };
 
       this.applyBackgroundTexture(texture, dataUrl);
     } catch (error) {
@@ -2326,6 +2365,7 @@ export class CanvasManager {
     this.backgroundSprite.anchor.set(0, 0);
     this.backgroundSprite.position.set(0, 0);
 
+    // 리사이즈된 텍스처 크기 저장 (실제 사용되는 크기)
     this.backgroundOriginalSize = {
       width: texture.width,
       height: texture.height,
@@ -2333,13 +2373,28 @@ export class CanvasManager {
 
     this.backgroundDataUrl = dataUrl ?? this.backgroundDataUrl;
 
+    // 스케일 계산 시 현재 캔버스 가로 크기를 기준으로 계산
+    // 원본 이미지 크기를 기준으로 스케일을 계산
+    const scaleBaseWidth = this.backgroundTrueOriginalSize
+      ? this.backgroundTrueOriginalSize.width
+      : texture.width;
+
     const fitScale = this.calculateFitScaleForSize(
-      texture.width,
-      texture.height
+      scaleBaseWidth,
+      this.backgroundTrueOriginalSize
+        ? this.backgroundTrueOriginalSize.height
+        : texture.height
     );
 
     this.backgroundScale = fitScale;
-    this.backgroundSprite.scale.set(this.backgroundScale);
+
+    // 스프라이트는 리사이즈된 텍스처를 사용하므로, 스케일을 조정해야 함
+    // 원본 기준 스케일을 리사이즈된 텍스처에 맞게 변환
+    const spriteScale = this.backgroundTrueOriginalSize
+      ? (fitScale * this.backgroundTrueOriginalSize.width) / texture.width
+      : fitScale;
+
+    this.backgroundSprite.scale.set(spriteScale);
 
     this.onBackgroundScaleChange?.(this.backgroundScale);
 
@@ -2350,16 +2405,31 @@ export class CanvasManager {
 
     // 배경 이미지를 가로폭에 맞춰 스케일링했으므로,
     // 세로 방향으로 잘리지 않도록 캔버스 높이를 이미지 높이에 맞게 확장합니다.
-    const scaledHeight = texture.height * this.backgroundScale;
-    const scaledWidth = texture.width * this.backgroundScale;
+    // 스케일은 원본 이미지 크기를 기준으로 계산되었으므로, 원본 크기에 스케일을 적용
+    const baseWidth = this.backgroundTrueOriginalSize
+      ? this.backgroundTrueOriginalSize.width
+      : texture.width;
+    const baseHeight = this.backgroundTrueOriginalSize
+      ? this.backgroundTrueOriginalSize.height
+      : texture.height;
+
+    const scaledHeight = baseHeight * this.backgroundScale;
+    const scaledWidth = baseWidth * this.backgroundScale;
 
     // 배경 이미지가 캔버스 크기를 넘어가지 않도록 확인
     if (scaledWidth > this.app.screen.width) {
       // 가로 크기에 맞춰 스케일 재조정
-      const correctedScale = this.app.screen.width / texture.width;
+      const correctedScale = this.app.screen.width / baseWidth;
       this.backgroundScale = correctedScale;
-      this.backgroundSprite.scale.set(this.backgroundScale);
-      const newScaledHeight = texture.height * this.backgroundScale;
+
+      // 스프라이트 스케일도 조정 (리사이즈된 텍스처에 맞게)
+      const correctedSpriteScale = this.backgroundTrueOriginalSize
+        ? (correctedScale * this.backgroundTrueOriginalSize.width) /
+          texture.width
+        : correctedScale;
+      this.backgroundSprite.scale.set(correctedSpriteScale);
+
+      const newScaledHeight = baseHeight * this.backgroundScale;
 
       // 캔버스 높이를 재조정된 이미지 높이에 맞춤
       if (newScaledHeight > this.app.screen.height) {
@@ -2817,7 +2887,18 @@ export class CanvasManager {
     if (!this.backgroundSprite) return;
     const clamped = Math.min(Math.max(scale, 0.1), 5);
     this.backgroundScale = clamped;
-    this.backgroundSprite.scale.set(this.backgroundScale);
+
+    // 스프라이트는 리사이즈된 텍스처를 사용하므로, 스케일을 조정해야 함
+    // 원본 기준 스케일을 리사이즈된 텍스처에 맞게 변환
+    if (this.backgroundTrueOriginalSize && this.backgroundOriginalSize) {
+      const spriteScale =
+        (clamped * this.backgroundTrueOriginalSize.width) /
+        this.backgroundOriginalSize.width;
+      this.backgroundSprite.scale.set(spriteScale);
+    } else {
+      this.backgroundSprite.scale.set(this.backgroundScale);
+    }
+
     this.updateTransformOverlay();
     this.onBackgroundScaleChange?.(this.backgroundScale);
     this.emitBackgroundTransformChange();
@@ -2842,9 +2923,18 @@ export class CanvasManager {
 
     const { scale } = transform;
     this.backgroundScale = Math.min(Math.max(scale, 0.1), 5);
+
+    // 스프라이트는 리사이즈된 텍스처를 사용하므로, 스케일을 조정해야 함
+    let spriteScale = this.backgroundScale;
+    if (this.backgroundTrueOriginalSize && this.backgroundOriginalSize) {
+      spriteScale =
+        (this.backgroundScale * this.backgroundTrueOriginalSize.width) /
+        this.backgroundOriginalSize.width;
+    }
+
     // 배경 이미지는 항상 (0, 0) 위치에 고정 (여백 및 잘림 방지)
     this.backgroundSprite.position.set(0, 0);
-    this.backgroundSprite.scale.set(this.backgroundScale);
+    this.backgroundSprite.scale.set(spriteScale);
     this.updateTransformOverlay();
     if (options.notify) {
       this.onBackgroundScaleChange?.(this.backgroundScale);
@@ -2863,27 +2953,48 @@ export class CanvasManager {
       return null;
     }
 
+    // originalSize는 원본 이미지 크기를 반환 (리사이즈 전)
+    const originalSize =
+      this.backgroundTrueOriginalSize || this.backgroundOriginalSize;
+
     return {
       dataUrl: this.backgroundDataUrl,
       x: 0, // 배경 이미지는 항상 (0, 0) 위치 고정
       y: 0, // 배경 이미지는 항상 (0, 0) 위치 고정
       scale: this.backgroundSprite.scale.x,
-      originalSize: this.backgroundOriginalSize,
+      originalSize: originalSize,
     };
   }
 
   resetBackgroundTransform(): void {
-    if (!this.backgroundSprite || !this.app || !this.backgroundOriginalSize) {
+    if (!this.backgroundSprite || !this.app) {
+      return;
+    }
+
+    // 원본 이미지 크기 사용 (리사이즈 전)
+    const originalSize =
+      this.backgroundTrueOriginalSize || this.backgroundOriginalSize;
+    if (!originalSize) {
       return;
     }
 
     const fitScale = this.calculateFitScaleForSize(
-      this.backgroundOriginalSize.width,
-      this.backgroundOriginalSize.height
+      originalSize.width,
+      originalSize.height
     );
 
     this.backgroundScale = fitScale;
-    this.backgroundSprite.scale.set(this.backgroundScale);
+
+    // 스프라이트는 리사이즈된 텍스처를 사용하므로, 스케일을 조정해야 함
+    if (this.backgroundTrueOriginalSize && this.backgroundOriginalSize) {
+      const spriteScale =
+        (fitScale * this.backgroundTrueOriginalSize.width) /
+        this.backgroundOriginalSize.width;
+      this.backgroundSprite.scale.set(spriteScale);
+    } else {
+      this.backgroundSprite.scale.set(this.backgroundScale);
+    }
+
     // 배경 이미지는 항상 (0, 0)에서 시작
     this.backgroundSprite.position.set(0, 0);
     this.stopBackgroundDrag();
@@ -2904,6 +3015,7 @@ export class CanvasManager {
       this.backgroundSprite.destroy();
       this.backgroundSprite = null;
       this.backgroundOriginalSize = null;
+      this.backgroundTrueOriginalSize = null;
       this.backgroundScale = 1;
       this.backgroundDataUrl = null;
       this.stopBackgroundDrag();
