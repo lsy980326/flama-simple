@@ -473,6 +473,9 @@ export class Canvas2DViewer {
 
   /**
    * 도형 객체 렌더링
+   *
+   * 사각형, 원, 선을 Canvas 2D API로 렌더링합니다.
+   * width/height 또는 x2/y2 좌표를 기반으로 렌더링합니다.
    */
   private renderShapeObject(obj: CanvasObject): void {
     if (!obj.tool || !obj.color || !obj.brushSize) return;
@@ -481,28 +484,41 @@ export class Canvas2DViewer {
     this.ctx.lineWidth = obj.brushSize;
     this.ctx.beginPath();
 
-    if (obj.tool === "rectangle" && obj.width && obj.height) {
-      this.ctx.rect(
-        obj.x - obj.width / 2,
-        obj.y - obj.height / 2,
-        obj.width,
-        obj.height
-      );
-    } else if (obj.tool === "circle") {
-      // 원의 경우 width와 height를 사용하거나, x2와 y2를 사용하여 반지름 계산
-      let radius: number;
-      if (obj.width && obj.height) {
-        radius = Math.max(obj.width, obj.height) / 2;
-      } else if (obj.x2 && obj.y2) {
-        // x2, y2를 사용하여 반지름 계산
-        radius =
-          Math.sqrt(Math.pow(obj.x2 - obj.x, 2) + Math.pow(obj.y2 - obj.y, 2)) /
-          2;
+    if (obj.tool === "rectangle") {
+      // 사각형: width/height 또는 x2/y2 좌표 사용
+      if (obj.width !== undefined && obj.height !== undefined) {
+        // width/height 기반 렌더링 (중심점 기준)
+        this.ctx.rect(
+          obj.x - obj.width / 2,
+          obj.y - obj.height / 2,
+          obj.width,
+          obj.height
+        );
+      } else if (obj.x2 !== undefined && obj.y2 !== undefined) {
+        // x2/y2 좌표 기반 렌더링 (CanvasManager 방식과 동일)
+        this.ctx.rect(obj.x, obj.y, obj.x2 - obj.x, obj.y2 - obj.y);
       } else {
-        return; // 반지름을 계산할 수 없으면 렌더링하지 않음
+        return; // 렌더링할 수 없음
       }
-      this.ctx.arc(obj.x, obj.y, radius, 0, Math.PI * 2);
-    } else if (obj.tool === "line" && obj.x2 && obj.y2) {
+    } else if (obj.tool === "circle") {
+      // 원: width/height 또는 x2/y2로부터 반지름 계산
+      const centerX = obj.x;
+      const centerY = obj.y;
+      let radius: number;
+
+      if (obj.width && obj.height) {
+        // width/height 기반 반지름 계산
+        radius = Math.max(obj.width, obj.height) / 2;
+      } else if (obj.x2 !== undefined && obj.y2 !== undefined) {
+        // x2/y2 좌표 기반 반지름 계산 (CanvasManager 방식과 동일)
+        radius = Math.hypot(obj.x2 - obj.x, obj.y2 - obj.y);
+      } else {
+        return; // 반지름을 계산할 수 없음
+      }
+
+      this.ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+    } else if (obj.tool === "line" && obj.x2 !== undefined && obj.y2 !== undefined) {
+      // 선: x, y에서 x2, y2로 직선 그리기
       this.ctx.moveTo(obj.x, obj.y);
       this.ctx.lineTo(obj.x2, obj.y2);
     }
