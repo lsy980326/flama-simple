@@ -109,8 +109,8 @@ const extractHwpFromServer = async (
   // 브라우저 환경에서는 process가 정의되지 않을 수 있으므로 안전하게 처리
   let envUrl: string | undefined;
   try {
-    if (typeof process !== "undefined" && process.env) {
-      envUrl = process.env.REACT_APP_API_URL;
+    if (typeof window !== "undefined" && (window as any).process?.env) {
+      envUrl = (window as any).process.env.REACT_APP_API_URL;
     }
   } catch {
     // process 접근 실패 시 무시 (브라우저 환경 등)

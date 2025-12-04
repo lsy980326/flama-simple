@@ -178,12 +178,10 @@ export class CanvasViewerManager {
   }
 
   /**
-   * 캔버스 크기 업데이트 (배경 이미지, 그리기, 객체를 고려)
-   * 가로 크기는 canvasWidth로 고정하고, 세로는 내용에 맞춰 조정
+   * 캔버스 크기 업데이트 (배경 이미지 기준)
+   * 가로 크기는 canvasWidth로 고정하고, 세로는 배경 이미지 비율에 맞춰 조정
    */
   private updateCanvasSize(): void {
-    let minY = 0;
-    let maxY = this.height;
     let newWidth = this.canvasWidth;
     let newHeight = this.height;
 
@@ -191,80 +189,21 @@ export class CanvasViewerManager {
     if (this.backgroundState && this.backgroundState.dataUrl) {
       const bgInfo = this.viewer.getBackgroundInfo();
       if (bgInfo) {
-        // 실제 이미지 크기 사용
-        const aspectRatio = bgInfo.height / bgInfo.width;
-        newHeight = this.canvasWidth * aspectRatio;
-        const y = this.backgroundState.y || 0;
-        maxY = Math.max(maxY, y + newHeight);
+        // 690px 기준으로 스케일링한 높이 계산
+        const targetWidth = 690;
+        const scale = targetWidth / bgInfo.width;
+        const baseContentHeight = bgInfo.height * scale;
+        
+        // canvasWidth에 맞춰 다시 스케일링
+        const displayScale = this.canvasWidth / 690;
+        newHeight = baseContentHeight * displayScale;
       }
+    } else {
+      // 배경 이미지가 없으면 기본 높이 사용
+      newHeight = Math.max(this.height, 300);
     }
 
-    // 그리기 작업 bounds 계산 (세로만 고려, 가로는 canvasWidth로 고정)
-    for (const op of this.allOperations) {
-      if (op.type === "draw" || op.type === "erase") {
-        minY = Math.min(minY, op.y);
-        maxY = Math.max(maxY, op.y);
-
-        // 미들포인트도 고려
-        if (op.middlePoints) {
-          for (const point of op.middlePoints) {
-            minY = Math.min(minY, point.y);
-            maxY = Math.max(maxY, point.y);
-          }
-        }
-      } else if (op.type === "shape" && op.x2 && op.y2) {
-        minY = Math.min(minY, op.y, op.y2);
-        maxY = Math.max(maxY, op.y, op.y2);
-      } else if (op.type === "text" && op.text) {
-        minY = Math.min(minY, op.y);
-        maxY = Math.max(maxY, op.y);
-      }
-    }
-
-    // 객체 bounds 계산 (세로만 고려)
-    for (const obj of this.allObjects) {
-      if (obj.type === "image" && obj.width && obj.height) {
-        const scale = obj.scale || 1;
-        const height = obj.height * scale;
-        minY = Math.min(minY, obj.y - height / 2);
-        maxY = Math.max(maxY, obj.y + height / 2);
-      } else if (obj.type === "text") {
-        minY = Math.min(minY, obj.y);
-        maxY = Math.max(maxY, obj.y);
-      } else if (obj.type === "shape") {
-        if (obj.tool === "rectangle" && obj.width && obj.height) {
-          minY = Math.min(minY, obj.y - obj.height / 2);
-          maxY = Math.max(maxY, obj.y + obj.height / 2);
-        } else if (obj.tool === "circle") {
-          // 원의 경우 width와 height를 사용하거나, x2와 y2를 사용하여 반지름 계산
-          if (obj.width && obj.height) {
-            const radius = Math.max(obj.width, obj.height) / 2;
-            minY = Math.min(minY, obj.y - radius);
-            maxY = Math.max(maxY, obj.y + radius);
-          } else if (obj.x2 && obj.y2) {
-            // x2, y2를 사용하여 반지름 계산
-            const radius = Math.sqrt(
-              Math.pow(obj.x2 - obj.x, 2) + Math.pow(obj.y2 - obj.y, 2)
-            ) / 2;
-            minY = Math.min(minY, obj.y - radius);
-            maxY = Math.max(maxY, obj.y + radius);
-          }
-        } else if (obj.tool === "line" && obj.x2 && obj.y2) {
-          minY = Math.min(minY, obj.y, obj.y2);
-          maxY = Math.max(maxY, obj.y, obj.y2);
-        }
-      }
-    }
-
-    // 최소 세로 크기는 초기 높이
-    minY = Math.min(minY, 0);
-    maxY = Math.max(maxY, this.height);
-
-    // 패딩 추가
-    const padding = 20;
-    newHeight = Math.max(newHeight, maxY - minY + padding * 2);
-
-    // 가로는 canvasWidth로 고정, 세로는 내용에 맞춰 조정
+    // 가로는 canvasWidth로 고정, 세로는 배경 이미지 비율에 맞춰 조정
     if (newWidth !== this.width || newHeight !== this.height) {
       this.width = newWidth;
       this.height = newHeight;

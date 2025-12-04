@@ -1,8 +1,12 @@
-import { DrawingOperation, CanvasObject, BackgroundState } from "../collaboration/YjsDrawingManager";
+import {
+  DrawingOperation,
+  CanvasObject,
+  BackgroundState,
+} from "../collaboration/YjsDrawingManager";
 
 /**
  * Canvas 2D 기반 경량 뷰어
- * 
+ *
  * PIXI.js 대신 Canvas 2D API를 사용하여 읽기 전용 뷰어를 제공합니다.
  * 실시간 동기화는 Y.js를 통해 처리하며, 렌더링만 Canvas 2D로 수행합니다.
  */
@@ -17,6 +21,10 @@ export class Canvas2DViewer {
   private backgroundState: BackgroundState | null = null;
   private allOperations: DrawingOperation[] = [];
   private allObjects: CanvasObject[] = [];
+  private contentScale: number = 1; // 콘텐츠 스케일 (모바일 대응)
+  private imageCache: Map<string, HTMLImageElement> = new Map(); // 이미지 캐시
+  private baseContentWidth: number = 690; // 콘텐츠 기준 너비
+  private baseContentHeight: number = 600; // 콘텐츠 기준 높이
 
   /**
    * 배경 이미지 정보 반환
@@ -33,7 +41,12 @@ export class Canvas2DViewer {
     return null;
   }
 
-  constructor(container: HTMLElement, width: number, height: number, canvasWidth: number = 690) {
+  constructor(
+    container: HTMLElement,
+    width: number,
+    height: number,
+    canvasWidth: number = 690
+  ) {
     this.width = width;
     this.height = height;
     this.canvasWidth = canvasWidth;
@@ -49,14 +62,11 @@ export class Canvas2DViewer {
       throw new Error("Canvas 2D context를 생성할 수 없습니다.");
     }
 
-    // 해상도 최적화 (모바일 성능 고려)
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    this.canvas.width = width * dpr;
-    this.canvas.height = height * dpr;
-    this.canvas.style.width = `${width}px`;
-    this.canvas.style.height = `${height}px`;
-    this.ctx.scale(dpr, dpr);
-    this.scale = dpr;
+    // 콘텐츠 스케일 계산 (기본 canvasWidth 690px 기준)
+    this.contentScale = canvasWidth / 690;
+
+    // 초기 Canvas 크기 설정
+    this.updateCanvasSize();
 
     // 컨테이너에 추가
     container.appendChild(this.canvas);
@@ -70,14 +80,12 @@ export class Canvas2DViewer {
     this.height = height;
     if (canvasWidth !== undefined) {
       this.canvasWidth = canvasWidth;
+      // 콘텐츠 스케일 재계산
+      this.contentScale = canvasWidth / 690;
     }
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    this.canvas.width = width * dpr;
-    this.canvas.height = height * dpr;
-    this.canvas.style.width = `${width}px`;
-    this.canvas.style.height = `${height}px`;
-    this.ctx.scale(dpr / this.scale, dpr / this.scale);
-    this.scale = dpr;
+
+    // Canvas 크기 업데이트
+    this.updateCanvasSize();
     this.redraw();
   }
 
@@ -86,7 +94,7 @@ export class Canvas2DViewer {
    */
   async setBackground(state: BackgroundState | null): Promise<void> {
     this.backgroundState = state;
-    
+
     if (state && state.dataUrl) {
       return new Promise((resolve, reject) => {
         const img = new Image();
@@ -102,6 +110,35 @@ export class Canvas2DViewer {
       this.backgroundImage = null;
       this.redraw();
     }
+  }
+
+  /**
+   * Canvas 내부 크기 업데이트
+   */
+  private updateCanvasSize(): void {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+    // 배경 이미지가 있으면 비율에 맞춰 baseContentHeight 계산
+    if (this.backgroundImage) {
+      const targetWidth = 690;
+      const scale = targetWidth / this.backgroundImage.width;
+      this.baseContentHeight = this.backgroundImage.height * scale;
+    }
+
+    // Canvas 내부 크기 = 표시 크기와 동일하게 설정
+    // 이렇게 하면 CSS 스케일링이 필요 없음
+    this.canvas.width = this.width * dpr;
+    this.canvas.height = this.height * dpr;
+
+    // CSS 크기 = 표시 크기
+    this.canvas.style.width = `${this.width}px`;
+    this.canvas.style.height = `${this.height}px`;
+
+    // DPR과 contentScale을 함께 적용
+    // contentScale을 적용하여 690px 기준 좌표를 실제 표시 크기로 변환
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.ctx.scale(dpr * this.contentScale, dpr * this.contentScale);
+    this.scale = dpr;
   }
 
   /**
@@ -128,24 +165,28 @@ export class Canvas2DViewer {
    * 전체 다시 그리기 (배경 + 그리기 + 객체)
    */
   redrawAll(): void {
-    // 배경 지우기
-    this.ctx.clearRect(0, 0, this.canvas.width / this.scale, this.canvas.height / this.scale);
+    // 배경 지우기 (690px 기준 좌표계 - ctx.scale 적용됨)
+    this.ctx.clearRect(0, 0, this.baseContentWidth, this.baseContentHeight);
 
     // 배경 이미지 그리기
-    if (this.backgroundImage && this.backgroundState && this.backgroundState.dataUrl) {
+    if (
+      this.backgroundImage &&
+      this.backgroundState &&
+      this.backgroundState.dataUrl
+    ) {
       try {
-        // 배경 이미지를 canvasWidth에 맞춰 스케일링
-        const originalWidth = this.backgroundImage.width;
-        const originalHeight = this.backgroundImage.height;
-        const targetWidth = this.canvasWidth;
-        const scale = targetWidth / originalWidth;
+        // 배경 이미지를 690px 기준으로 그리기 (ctx.scale이 자동으로 스케일링)
         const x = this.backgroundState.x || 0;
         const y = this.backgroundState.y || 0;
-        const width = originalWidth * scale;
-        const height = originalHeight * scale;
-        
-        // 배경 이미지 그리기
-        this.ctx.drawImage(this.backgroundImage, x, y, width, height);
+
+        // 배경 이미지 그리기 (690px x baseContentHeight 기준)
+        this.ctx.drawImage(
+          this.backgroundImage,
+          x,
+          y,
+          this.baseContentWidth,
+          this.baseContentHeight
+        );
       } catch (error) {
         console.warn("배경 이미지 그리기 실패:", error);
       }
@@ -344,9 +385,8 @@ export class Canvas2DViewer {
     } else if (op.tool === "circle") {
       const centerX = (op.x + op.x2) / 2;
       const centerY = (op.y + op.y2) / 2;
-      const radius = Math.sqrt(
-        Math.pow(op.x2 - op.x, 2) + Math.pow(op.y2 - op.y, 2)
-      ) / 2;
+      const radius =
+        Math.sqrt(Math.pow(op.x2 - op.x, 2) + Math.pow(op.y2 - op.y, 2)) / 2;
       this.ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
     } else if (op.tool === "line") {
       this.ctx.moveTo(op.x, op.y);
@@ -381,17 +421,43 @@ export class Canvas2DViewer {
   private renderImageObject(obj: CanvasObject): void {
     if (!obj.dataUrl) return;
 
-    const img = new Image();
-    img.onload = () => {
-      const scale = obj.scale || 1;
-      const width = (obj.width || img.width) * scale;
-      const height = (obj.height || img.height) * scale;
-      const x = obj.x - width / 2;
-      const y = obj.y - height / 2;
+    // 캐시에서 이미지 확인
+    let img = this.imageCache.get(obj.dataUrl);
 
-      this.ctx.drawImage(img, x, y, width, height);
-    };
-    img.src = obj.dataUrl;
+    if (img) {
+      if (img.complete && img.naturalWidth > 0) {
+        // 이미 로드된 이미지는 즉시 그리기
+        const scale = obj.scale || 1;
+        const width = (obj.width || img.width) * scale;
+        const height = (obj.height || img.height) * scale;
+        const x = obj.x - width / 2;
+        const y = obj.y - height / 2;
+
+        this.ctx.drawImage(img, x, y, width, height);
+      } else if (!img.onload) {
+        // 로드 중인 이미지에 onload가 없으면 추가
+        img.onload = () => {
+          this.redrawAll();
+        };
+      }
+      // 로드 중인 이미지는 다음 redrawAll에서 그려짐
+    } else {
+      // 새 이미지 로드
+      img = new Image();
+      img.crossOrigin = "anonymous"; // CORS 문제 방지
+      this.imageCache.set(obj.dataUrl, img);
+
+      const dataUrl = obj.dataUrl; // 타입 체크를 위해 변수에 저장
+      img.onload = () => {
+        // 이미지 로드 완료 후 전체 다시 그리기
+        this.redrawAll();
+      };
+      img.onerror = () => {
+        console.warn("이미지 로드 실패:", dataUrl);
+        this.imageCache.delete(dataUrl);
+      };
+      img.src = dataUrl;
+    }
   }
 
   /**
@@ -416,7 +482,12 @@ export class Canvas2DViewer {
     this.ctx.beginPath();
 
     if (obj.tool === "rectangle" && obj.width && obj.height) {
-      this.ctx.rect(obj.x - obj.width / 2, obj.y - obj.height / 2, obj.width, obj.height);
+      this.ctx.rect(
+        obj.x - obj.width / 2,
+        obj.y - obj.height / 2,
+        obj.width,
+        obj.height
+      );
     } else if (obj.tool === "circle") {
       // 원의 경우 width와 height를 사용하거나, x2와 y2를 사용하여 반지름 계산
       let radius: number;
@@ -424,9 +495,9 @@ export class Canvas2DViewer {
         radius = Math.max(obj.width, obj.height) / 2;
       } else if (obj.x2 && obj.y2) {
         // x2, y2를 사용하여 반지름 계산
-        radius = Math.sqrt(
-          Math.pow(obj.x2 - obj.x, 2) + Math.pow(obj.y2 - obj.y, 2)
-        ) / 2;
+        radius =
+          Math.sqrt(Math.pow(obj.x2 - obj.x, 2) + Math.pow(obj.y2 - obj.y, 2)) /
+          2;
       } else {
         return; // 반지름을 계산할 수 없으면 렌더링하지 않음
       }
@@ -457,9 +528,11 @@ export class Canvas2DViewer {
    * 정리
    */
   destroy(): void {
+    // 이미지 캐시 정리
+    this.imageCache.clear();
+
     if (this.canvas.parentElement) {
       this.canvas.parentElement.removeChild(this.canvas);
     }
   }
 }
-

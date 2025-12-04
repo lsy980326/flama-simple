@@ -16,6 +16,7 @@ import {
  */
 export default function App() {
   const [selectedExample, setSelectedExample] = React.useState<string>("basic");
+  const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
 
   const examples = [
     { id: "basic", label: "1. 기본 캔버스", component: <BasicCanvasExample /> },
@@ -49,23 +50,32 @@ export default function App() {
   const currentExample = examples.find((ex) => ex.id === selectedExample);
 
   return (
-    <div style={{ padding: 24, maxWidth: 1400, margin: "0 auto" }}>
-      <h1 style={{ marginBottom: 8 }}>LiveCollab 라이브러리 예제 모음</h1>
-      <p style={{ color: "#666", marginBottom: 24 }}>
-        아래 예제들은 모두 커스텀 로직 없이 단순히 import해서 사용하는 방법을
-        보여줍니다. 각 예제는 독립적으로 동작하며, 라이브러리의 기본 기능만
-        사용합니다.
-      </p>
+    <div style={{ 
+      padding: isMobile ? 0 : 24, 
+      maxWidth: isMobile ? '100%' : 1400, 
+      margin: "0 auto" 
+    }}>
+      {!isMobile && (
+        <>
+          <h1 style={{ marginBottom: 8 }}>LiveCollab 라이브러리 예제 모음</h1>
+          <p style={{ color: "#666", marginBottom: 24 }}>
+            아래 예제들은 모두 커스텀 로직 없이 단순히 import해서 사용하는 방법을
+            보여줍니다. 각 예제는 독립적으로 동작하며, 라이브러리의 기본 기능만
+            사용합니다.
+          </p>
+        </>
+      )}
 
       {/* 예제 선택 탭 */}
       <div
         style={{
           display: "flex",
           gap: 8,
-          marginBottom: 24,
+          marginBottom: isMobile ? 0 : 24,
           flexWrap: "wrap",
-          borderBottom: "2px solid #e0e0e0",
-          paddingBottom: 16,
+          borderBottom: isMobile ? "none" : "2px solid #e0e0e0",
+          paddingBottom: isMobile ? 0 : 16,
+          padding: isMobile ? 8 : 0,
         }}
       >
         {examples.map((example) => (
@@ -93,24 +103,25 @@ export default function App() {
       {/* 선택된 예제 표시 */}
       <div
         style={{
-          border: "1px solid #ddd",
-          borderRadius: 8,
-          padding: 20,
-          background: "white",
+          border: isMobile ? "none" : "1px solid #ddd",
+          borderRadius: isMobile ? 0 : 8,
+          padding: isMobile ? 0 : 20,
+          background: isMobile ? "transparent" : "white",
         }}
       >
         {currentExample?.component}
       </div>
 
       {/* 예제 설명 */}
-      <div
-        style={{
-          marginTop: 24,
-          padding: 16,
-          background: "#f9f9f9",
-          borderRadius: 8,
-        }}
-      >
+      {!isMobile && (
+        <div
+          style={{
+            marginTop: 24,
+            padding: 16,
+            background: "#f9f9f9",
+            borderRadius: 8,
+          }}
+        >
         <h3 style={{ marginTop: 0 }}>💡 사용 방법</h3>
         <p style={{ marginBottom: 8 }}>
           각 예제는 <code>src/examples/</code> 디렉토리에 있으며, 다음과 같이
@@ -132,18 +143,19 @@ function App() {
   return <BasicCanvasExample />;
 }`}
         </pre>
-        <p
-          style={{
-            marginTop: 16,
-            marginBottom: 0,
-            fontSize: 14,
-            color: "#666",
-          }}
-        >
-          각 예제 파일을 열어보면 단순히 라이브러리 컴포넌트를 import하고
-          props만 전달하는 것을 확인할 수 있습니다.
-        </p>
-      </div>
+          <p
+            style={{
+              marginTop: 16,
+              marginBottom: 0,
+              fontSize: 14,
+              color: "#666",
+            }}
+          >
+            각 예제 파일을 열어보면 단순히 라이브러리 컴포넌트를 import하고
+            props만 전달하는 것을 확인할 수 있습니다.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

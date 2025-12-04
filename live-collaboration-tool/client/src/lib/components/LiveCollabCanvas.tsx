@@ -464,7 +464,7 @@ export const LiveCollabCanvas: React.FC<LiveCollabCanvasProps> = ({
 
     let lastViewportWidth = 0;
     let lastViewportHeight = 0;
-    let resizeTimeout: NodeJS.Timeout | null = null;
+    let resizeTimeout: ReturnType<typeof setTimeout> | null = null;
 
     /**
      * 스크롤 위치를 (0, 0)으로 리셋합니다.
