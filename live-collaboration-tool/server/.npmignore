@@ -1,6 +1,5 @@
 node_modules
-dist
-build
+src
 *.log
 .DS_Store
 .env
@@ -11,6 +10,8 @@ build
 coverage
 .nyc_output
 *.tsbuildinfo
+tsconfig.json
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
 
-# 테스트 프로젝트
-test-lib-usage/

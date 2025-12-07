@@ -1,28 +1,41 @@
 {
-  "name": "client",
+  "name": "@live-collaboration-tool/client",
   "version": "0.1.0",
-  "private": true,
+  "description": "실시간 협업 도구 라이브러리 - WebRTC, Socket.IO, Y.js 기반",
+  "main": "dist/index.cjs.js",
+  "module": "dist/index.esm.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "src/lib"
+  ],
+  "keywords": [
+    "collaboration",
+    "realtime",
+    "webrtc",
+    "canvas",
+    "yjs",
+    "react",
+    "typescript"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "peerDependencies": {
+    "react": "^18.0.0 || ^19.0.0",
+    "react-dom": "^18.0.0 || ^19.0.0"
+  },
   "dependencies": {
-    "@testing-library/dom": "^10.4.1",
-    "@testing-library/jest-dom": "^6.9.1",
-    "@testing-library/react": "^16.3.0",
-    "@testing-library/user-event": "^13.5.0",
-    "@types/jest": "^27.5.2",
-    "@types/multer": "^1.4.12",
-    "@types/node": "^16.18.126",
-    "@types/react": "^19.2.2",
-    "@types/react-dom": "^19.2.2",
     "jszip": "^3.10.1",
     "mammoth": "^1.11.0",
     "marked": "^11.2.0",
     "multer": "^2.0.2",
     "node-hwp": "0.1.0-alpha",
     "pixi.js": "^8.14.0",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
-    "react-scripts": "5.0.1",
     "socket.io-client": "^4.8.1",
-    "typescript": "^4.9.5",
     "web-vitals": "^2.1.4",
     "y-indexeddb": "^9.0.12",
     "y-websocket": "^3.0.0",
@@ -32,6 +45,9 @@
     "start": "react-app-rewired start",
     "dev": "react-app-rewired start",
     "build": "react-app-rewired build",
+    "build:lib": "rollup -c",
+    "build:lib:watch": "rollup -c -w",
+    "prepublishOnly": "npm run build:lib",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
   },
@@ -54,7 +70,27 @@
     ]
   },
   "devDependencies": {
+    "@rollup/plugin-commonjs": "^28.0.1",
+    "@rollup/plugin-node-resolve": "^15.3.0",
+    "@rollup/plugin-typescript": "^12.1.1",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^13.5.0",
+    "@types/jest": "^27.5.2",
+    "@types/multer": "^1.4.12",
+    "@types/node": "^16.18.126",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
     "null-loader": "^4.0.1",
-    "react-app-rewired": "^2.2.1"
+    "react": "^19.2.0",
+    "react-app-rewired": "^2.2.1",
+    "react-dom": "^19.2.0",
+    "react-scripts": "5.0.1",
+    "rollup": "^4.28.1",
+    "rollup-plugin-peer-deps-external": "^2.2.4",
+    "rollup-plugin-postcss": "^4.0.2",
+    "@rollup/plugin-terser": "^0.4.4",
+    "typescript": "^4.9.5"
   }
 }

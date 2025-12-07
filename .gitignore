@@ -50,6 +50,11 @@ desktop.ini
 # TypeScript 빌드 정보
 *.tsbuildinfo
 
+# TypeScript 컴파일 결과물 (.ts 파일이 있는 곳의 .js 파일)
+# src 폴더 내의 .js 파일은 컴파일 결과물로 간주
+**/src/**/*.js
+**/src/**/*.js.map
+
 # 임시 파일
 *.tmp
 .cache/

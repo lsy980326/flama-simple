@@ -1,30 +1,56 @@
 {
-  "name": "lct-realtime-server",
+  "name": "@live-collaboration-tool/server",
   "version": "0.1.0",
-  "private": true,
+  "description": "실시간 협업 도구 서버 - Socket.IO, Y.js WebSocket, WebRTC 시그널링 서버",
+  "main": "dist/index.js",
   "type": "module",
-  "main": "src/server.js",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "keywords": [
+    "collaboration",
+    "realtime",
+    "websocket",
+    "socket.io",
+    "yjs",
+    "webrtc",
+    "signaling",
+    "server"
+  ],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "bin": {
+    "lct-server": "./dist/server.js"
+  },
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "concurrently \"node src/server.js\" \"tsx src/index.ts\"",
-    "hwp": "tsx src/index.ts"
+    "start": "node dist/server.js",
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
+    "@y/websocket-server": "^0.1.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "multer": "^1.4.5-lts.1",
+    "node-hwp": "^0.1.0-alpha",
     "socket.io": "^4.8.1",
-    "ws": "^8.18.0",
-    "@y/websocket-server": "^0.1.1",
-    "node-hwp": "^0.1.0-alpha"
+    "ws": "^8.18.0"
   },
   "devDependencies": {
-    "concurrently": "^9.0.1",
-    "tsx": "^4.19.2",
-    "typescript": "^5.6.3",
+    "@types/cors": "^2.8.19",
     "@types/express": "^4.17.21",
     "@types/multer": "^1.4.12",
-    "@types/node": "^22.7.5"
+    "@types/node": "^22.7.5",
+    "@types/ws": "^8.18.1",
+    "concurrently": "^9.0.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
   }
 }

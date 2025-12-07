@@ -17,23 +17,11 @@ const { setupWSConnection } = require("@y/websocket-server/utils");
 const hwp = require("node-hwp");
 // multer 타입 확장
 interface MulterRequest extends Request {
-  file?: {
-    fieldname: string;
-    originalname: string;
-    encoding: string;
-    mimetype: string;
-    buffer: Buffer;
-    size: number;
-  };
+  file?: Express.Multer.File;
 }
 
 // @ts-ignore - multer는 CommonJS 모듈
 const multer = require("multer");
-
-// node-hwp 사용 예시 (제공된 코드 참고)
-// const HWP = hwp.HWP;
-// const doc = new HWP();
-// doc.loadFromHWP(file, callback, option);
 
 // 환경 변수 로드
 dotenv.config();
@@ -48,7 +36,7 @@ const io = new Server(server, {
 });
 
 const PORT = process.env.PORT || 5000;
-const YJS_WS_PORT = 5001;
+const YJS_WS_PORT = parseInt(process.env.YJS_WS_PORT || "5001", 10);
 
 // 미들웨어
 app.use(cors());
@@ -62,8 +50,82 @@ const upload = multer({
   storage: multer.memoryStorage(),
 });
 
-// HWPML을 HTML로 변환하는 함수 (file_converter 패턴 참고)
-// 참고: https://github.com/pjt3591oo/file_converter
+// 서버 상태 관리
+let isShuttingDown = false;
+const activeConnections = new Set();
+
+// 그레이스풀 셧다운 함수
+async function gracefulShutdown(signal: string) {
+  if (isShuttingDown) {
+    console.log("이미 종료 중입니다...");
+    return;
+  }
+
+  isShuttingDown = true;
+  console.log(`\n${signal} 신호를 받았습니다. 그레이스풀 셧다운을 시작합니다...`);
+
+  try {
+    // 1. 새로운 연결 거부
+    server.close(() => {
+      console.log("HTTP 서버가 종료되었습니다.");
+    });
+
+    // 2. WebSocket 서버 종료
+    wss.close(() => {
+      console.log("Y.js WebSocket 서버가 종료되었습니다.");
+    });
+
+    // 3. Socket.IO 연결 종료
+    io.close(() => {
+      console.log("Socket.IO 서버가 종료되었습니다.");
+    });
+
+    // 4. 활성 연결 종료 대기 (최대 10초)
+    const shutdownTimeout = setTimeout(() => {
+      console.warn("일부 연결이 종료되지 않았지만 강제 종료합니다.");
+      process.exit(1);
+    }, 10000);
+
+    // 모든 연결이 종료될 때까지 대기
+    const checkConnections = setInterval(() => {
+      if (activeConnections.size === 0) {
+        clearInterval(checkConnections);
+        clearTimeout(shutdownTimeout);
+        console.log("모든 연결이 종료되었습니다.");
+        process.exit(0);
+      }
+    }, 100);
+
+    // 5초 후에도 연결이 있으면 강제 종료
+    setTimeout(() => {
+      clearInterval(checkConnections);
+      clearTimeout(shutdownTimeout);
+      console.log("서버를 종료합니다.");
+      process.exit(0);
+    }, 5000);
+
+  } catch (error) {
+    console.error("셧다운 중 오류 발생:", error);
+    process.exit(1);
+  }
+}
+
+// 시그널 핸들러 등록
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+
+// 처리되지 않은 예외 처리
+process.on("uncaughtException", (error) => {
+  console.error("처리되지 않은 예외:", error);
+  gracefulShutdown("uncaughtException");
+});
+
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("처리되지 않은 Promise 거부:", reason);
+  console.error("Promise:", promise);
+});
+
+// HWPML을 HTML로 변환하는 함수
 function convertHwpmlToHtml(hml: string): string {
   if (!hml) {
     return "";
@@ -73,75 +135,45 @@ function convertHwpmlToHtml(hml: string): string {
     let html = hml;
 
     // 기본 HWPML 태그를 HTML 태그로 변환
-    // <HWPML> 제거
     html = html.replace(/<\/?HWPML[^>]*>/gi, "");
-
-    // <BODY> -> <body>
     html = html.replace(/<\/?BODY[^>]*>/gi, (match) => {
       return match.replace(/BODY/i, "body");
     });
-
-    // <SECTION> -> <div class="section">
     html = html.replace(/<SECTION[^>]*>/gi, '<div class="hwp-section">');
     html = html.replace(/<\/SECTION>/gi, "</div>");
-
-    // <P> -> <p> (이미 소문자로 변환되므로 명확하게 처리)
     html = html.replace(/<P[^>]*>/gi, "<p>");
     html = html.replace(/<\/P>/gi, "</p>");
-
-    // <LINE> -> <p> (문단으로 처리하여 더 명확하게)
     html = html.replace(/<LINE[^>]*>/gi, '<p class="hwp-line">');
     html = html.replace(/<\/LINE>/gi, "</p>");
-
-    // <CHAR> -> <span>
     html = html.replace(/<CHAR[^>]*>/gi, '<span class="hwp-char">');
     html = html.replace(/<\/CHAR>/gi, "</span>");
-
-    // <TEXT> -> 텍스트만 유지
     html = html.replace(/<\/?TEXT[^>]*>/gi, "");
-
-    // <RUBY> -> <ruby>
     html = html.replace(/<\/?RUBY[^>]*>/gi, (match) => {
       return match.replace(/RUBY/gi, "ruby");
     });
-
-    // <RT> -> <rt>
     html = html.replace(/<\/?RT[^>]*>/gi, (match) => {
       return match.replace(/RT(?=[^a-z])/gi, "rt");
     });
-
-    // <TABLE> -> <table>
     html = html.replace(/<\/?TABLE[^>]*>/gi, (match) => {
       return match.replace(/TABLE/gi, "table");
     });
-
-    // <TR> -> <tr>
     html = html.replace(/<\/?TR[^>]*>/gi, (match) => {
       return match.replace(/TR(?=[^a-z])/gi, "tr");
     });
-
-    // <TD> -> <td>
     html = html.replace(/<\/?TD[^>]*>/gi, (match) => {
       return match.replace(/TD(?=[^a-z])/gi, "td");
     });
-
-    // <IMAGE> -> <img>
     html = html.replace(/<IMAGE[^>]*>/gi, (match) => {
       return match.replace(/IMAGE/gi, "img");
     });
 
-    // 스타일 속성 추출 및 변환
-    // Face 속성을 스타일로 변환
+    // 스타일 속성 변환
     html = html.replace(/Face="([^"]*)"/gi, (match, face) => {
       return `style="font-family: '${face}'"`;
     });
-
-    // Size 속성을 스타일로 변환
     html = html.replace(/Size="([^"]*)"/gi, (match, size) => {
       return `style="font-size: ${size}pt"`;
     });
-
-    // Bold, Italic 등 처리
     html = html.replace(/Bold="true"/gi, (match, offset, str) => {
       const tagEnd = str.indexOf(">", offset);
       if (tagEnd > -1) {
@@ -154,7 +186,6 @@ function convertHwpmlToHtml(hml: string): string {
       }
       return match;
     });
-
     html = html.replace(/Italic="true"/gi, (match, offset, str) => {
       const tagEnd = str.indexOf(">", offset);
       if (tagEnd > -1) {
@@ -199,7 +230,6 @@ ${html}
     return html;
   } catch (error) {
     console.error("HWPML to HTML 변환 오류:", error);
-    // 변환 실패 시 기본 텍스트 추출
     return `<html><body><p>${hml
       .replace(/<[^>]+>/g, " ")
       .replace(/\s+/g, " ")
@@ -207,27 +237,19 @@ ${html}
   }
 }
 
-// HTML 엔티티를 완전히 디코딩하는 함수
+// HTML 엔티티 디코딩
 function decodeHtmlEntities(text: string): string {
   if (!text) {
     return "";
   }
 
   try {
-    // 먼저 숫자 엔티티 디코딩 (&#12685; 같은 형태)
-    // 10진수 숫자 엔티티: &#12685;
     text = text.replace(/&#(\d+);/g, (match, code) => {
-      const num = parseInt(code, 10);
-      return String.fromCharCode(num);
+      return String.fromCharCode(parseInt(code, 10));
     });
-
-    // 16진수 숫자 엔티티: &#x12685;
     text = text.replace(/&#x([0-9A-Fa-f]+);/g, (match, code) => {
-      const num = parseInt(code, 16);
-      return String.fromCharCode(num);
+      return String.fromCharCode(parseInt(code, 16));
     });
-
-    // 일반적인 HTML 엔티티 디코딩
     text = text
       .replace(/&nbsp;/g, " ")
       .replace(/&lt;/g, "<")
@@ -237,30 +259,6 @@ function decodeHtmlEntities(text: string): string {
       .replace(/&#39;/g, "'")
       .replace(/&apos;/g, "'");
 
-    // 알려진 HTML 엔티티들
-    const entities: Record<string, string> = {
-      "&nbsp;": " ",
-      "&lt;": "<",
-      "&gt;": ">",
-      "&amp;": "&",
-      "&quot;": '"',
-      "&apos;": "'",
-      "&copy;": "©",
-      "&reg;": "®",
-      "&trade;": "™",
-      "&hellip;": "…",
-      "&mdash;": "—",
-      "&ndash;": "–",
-    };
-
-    // 나머지 일반 엔티티 처리
-    for (const [entity, char] of Object.entries(entities)) {
-      text = text.replace(
-        new RegExp(entity.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"),
-        char
-      );
-    }
-
     return text;
   } catch (error) {
     console.error("HTML 엔티티 디코딩 오류:", error);
@@ -268,56 +266,7 @@ function decodeHtmlEntities(text: string): string {
   }
 }
 
-// HWPML에서 페이지 브레이크 정보를 추출하는 함수
-function extractPageBreaksFromHwpml(hml: string): number[] {
-  if (!hml) {
-    return [];
-  }
-
-  try {
-    const pageBreaks: number[] = [];
-    let currentIndex = 0;
-
-    // HWPML에서 페이지 브레이크 태그 찾기
-    // <PAGEBREAK>, <PAGE>, <NEWPAGE> 등의 태그 또는 페이지 속성 찾기
-    const pageBreakPatterns = [
-      /<PAGEBREAK[^>]*>/gi,
-      /<PAGE[^>]*>/gi,
-      /<NEWPAGE[^>]*>/gi,
-      /<SECTION[^>]*PageBreak[^>]*>/gi,
-    ];
-
-    // 모든 블록 태그의 위치를 추적하면서 페이지 브레이크 찾기
-    const allBlockTags = hml.matchAll(/<(P|LINE|SECTION)[^>]*>/gi);
-    let blockIndex = 0;
-
-    for (const match of allBlockTags) {
-      const tag = match[0];
-
-      // 페이지 브레이크 태그가 있는지 확인
-      for (const pattern of pageBreakPatterns) {
-        if (pattern.test(tag)) {
-          pageBreaks.push(blockIndex);
-          break;
-        }
-      }
-
-      // 페이지 브레이크 속성이 있는지 확인
-      if (tag.match(/PageBreak\s*=\s*["']?true["']?/i)) {
-        pageBreaks.push(blockIndex);
-      }
-
-      blockIndex++;
-    }
-
-    return pageBreaks;
-  } catch (error) {
-    console.error("페이지 브레이크 추출 오류:", error);
-    return [];
-  }
-}
-
-// HWPML에서 직접 텍스트를 줄 단위로 추출하는 함수 (페이지 정보 포함)
+// HWPML에서 텍스트 추출
 function extractTextLinesFromHwpml(hml: string): {
   lines: string[];
   pageBreaks: number[];
@@ -330,15 +279,10 @@ function extractTextLinesFromHwpml(hml: string): {
     const lines: string[] = [];
     const pageBreaks: number[] = [];
 
-    // HWPML 태그를 제거하고 텍스트만 추출
-    // <P>, <LINE>, <SECTION> 등의 블록 요소 사이의 텍스트를 추출
-
-    // 1. <P> 태그 내용 추출
     const pMatches = hml.match(/<P[^>]*>([\s\S]*?)<\/P>/gi);
     if (pMatches) {
       for (let i = 0; i < pMatches.length; i++) {
         const match = pMatches[i];
-        // 페이지 브레이크 확인
         if (
           match.match(/<PAGEBREAK[^>]*>/gi) ||
           match.match(/PageBreak\s*=\s*["']?true["']?/i)
@@ -346,35 +290,7 @@ function extractTextLinesFromHwpml(hml: string): {
           pageBreaks.push(lines.length);
         }
 
-        // 태그 제거하고 텍스트만 추출
         let text = match.replace(/<P[^>]*>/gi, "").replace(/<\/P>/gi, "");
-        // 페이지 브레이크 태그 제거
-        text = text.replace(/<PAGEBREAK[^>]*>/gi, "");
-        // 내부 태그 제거
-        text = text.replace(/<[^>]+>/g, " ");
-        // HTML 엔티티 디코딩
-        text = decodeHtmlEntities(text);
-        // 공백 정리
-        text = text.replace(/\s+/g, " ").trim();
-        if (text && text.length > 0) {
-          lines.push(text);
-        }
-      }
-    }
-
-    // 2. <LINE> 태그 내용 추출
-    const lineMatches = hml.match(/<LINE[^>]*>([\s\S]*?)<\/LINE>/gi);
-    if (lineMatches) {
-      for (const match of lineMatches) {
-        // 페이지 브레이크 확인
-        if (
-          match.match(/<PAGEBREAK[^>]*>/gi) ||
-          match.match(/PageBreak\s*=\s*["']?true["']?/i)
-        ) {
-          pageBreaks.push(lines.length);
-        }
-
-        let text = match.replace(/<LINE[^>]*>/gi, "").replace(/<\/LINE>/gi, "");
         text = text.replace(/<PAGEBREAK[^>]*>/gi, "");
         text = text.replace(/<[^>]+>/g, " ");
         text = decodeHtmlEntities(text);
@@ -385,96 +301,25 @@ function extractTextLinesFromHwpml(hml: string): {
       }
     }
 
-    // 3. <SECTION> 태그 내용 추출 (내부에 <P>, <LINE>이 없는 경우만)
-    const sectionMatches = hml.match(/<SECTION[^>]*>([\s\S]*?)<\/SECTION>/gi);
-    if (sectionMatches) {
-      for (const match of sectionMatches) {
-        // 내부에 <P> 또는 <LINE> 태그가 있는지 확인
-        if (!match.match(/<[PL]/i)) {
-          // 페이지 브레이크 확인
-          if (
-            match.match(/<PAGEBREAK[^>]*>/gi) ||
-            match.match(/PageBreak\s*=\s*["']?true["']?/i)
-          ) {
-            pageBreaks.push(lines.length);
-          }
-
-          let text = match
-            .replace(/<SECTION[^>]*>/gi, "")
-            .replace(/<\/SECTION>/gi, "");
-          text = text.replace(/<PAGEBREAK[^>]*>/gi, "");
-          text = text.replace(/<[^>]+>/g, " ");
-          text = decodeHtmlEntities(text);
-          text = text.replace(/\s+/g, " ").trim();
-          if (text && text.length > 0) {
-            lines.push(text);
-          }
-        }
-      }
-    }
-
-    // 4. 태그가 없는 일반 텍스트 추출 (블록 태그 사이의 텍스트)
-    // 모든 블록 태그를 제거한 후 남은 텍스트
-    let remainingText = hml;
-    // 블록 태그 제거
-    remainingText = remainingText.replace(/<[PLSECTION][^>]*>/gi, "");
-    remainingText = remainingText.replace(/<\/[PLSECTION]>/gi, "");
-    // 페이지 브레이크 태그 제거
-    remainingText = remainingText.replace(/<PAGEBREAK[^>]*>/gi, "");
-    // 모든 태그 제거
-    remainingText = remainingText.replace(/<[^>]+>/g, " ");
-    // HTML 엔티티 디코딩
-    remainingText = decodeHtmlEntities(remainingText);
-    // 줄바꿈으로 분리
-    const remainingLines = remainingText
-      .split(/\r?\n+/)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
-    lines.push(...remainingLines);
-
-    // 중복 제거 (페이지 브레이크 인덱스 조정 필요)
-    const uniqueLines: string[] = [];
-    const seenLines = new Set<string>();
-    const adjustedPageBreaks: number[] = [];
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      if (!seenLines.has(line)) {
-        seenLines.add(line);
-        uniqueLines.push(line);
-
-        // 페이지 브레이크 인덱스 조정
-        if (pageBreaks.includes(i)) {
-          adjustedPageBreaks.push(uniqueLines.length - 1);
-        }
-      }
-    }
-
-    return { lines: uniqueLines, pageBreaks: adjustedPageBreaks };
+    return { lines, pageBreaks };
   } catch (error) {
     console.error("HWPML 텍스트 추출 오류:", error);
     return { lines: [], pageBreaks: [] };
   }
 }
 
-// HTML에서 순수 텍스트 추출 (어노테이션용)
+// HTML에서 텍스트 추출
 function extractTextFromHtml(html: string): string {
   if (!html) {
     return "";
   }
 
   try {
-    // HTML 태그 제거
     let text = html.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "");
     text = text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "");
     text = text.replace(/<[^>]+>/g, " ");
-
-    // HTML 엔티티 디코딩 (완전한 디코딩)
     text = decodeHtmlEntities(text);
-
-    // 공백 정리
     text = text.replace(/\s+/g, " ").trim();
-
     return text;
   } catch (error) {
     console.error("HTML 텍스트 추출 오류:", error);
@@ -486,9 +331,19 @@ function extractTextFromHtml(html: string): string {
 app.get("/", (req, res) => {
   res.json({
     message: "Live Collaboration Tool Server",
-    version: "1.0.0",
+    version: "0.1.0",
     status: "running",
     features: ["Socket.IO", "Y.js WebSocket", "WebRTC Signaling", "HWP Parser"],
+  });
+});
+
+// 헬스 체크 엔드포인트
+app.get("/health", (req, res) => {
+  res.json({
+    status: "healthy",
+    uptime: process.uptime(),
+    connections: activeConnections.size,
+    timestamp: new Date().toISOString(),
   });
 });
 
@@ -497,6 +352,11 @@ app.post(
   "/api/hwp/parse",
   upload.single("file"),
   (req: MulterRequest, res: Response) => {
+    if (isShuttingDown) {
+      res.status(503).json({ error: "서버가 종료 중입니다." });
+      return;
+    }
+
     if (!req.file) {
       res.status(400).json({ error: "파일이 제공되지 않았습니다." });
       return;
@@ -509,10 +369,8 @@ app.post(
     );
 
     try {
-      // 임시 파일로 저장
       writeFileSync(tempFilePath, fileBuffer);
 
-      // node-hwp로 파싱 (제공된 코드 패턴 참고)
       hwp.open(tempFilePath, { type: "hwp" }, (err: Error | null, doc: any) => {
         // 임시 파일 삭제
         try {
@@ -539,11 +397,9 @@ app.post(
         }
 
         try {
-          // HWPML로 변환
           let hml = "";
           try {
             hml = doc.toHML(false) || "";
-            console.log("HWPML 변환 성공, 길이:", hml.length);
           } catch (hmlError) {
             console.error("HWPML 변환 오류:", hmlError);
             res.status(500).json({
@@ -561,41 +417,19 @@ app.post(
             return;
           }
 
-          // HWPML을 HTML로 변환
           const html = convertHwpmlToHtml(hml);
-          console.log("HTML 변환 성공, 길이:", html.length);
-
-          if (!html) {
-            res.status(500).json({
-              error: "HTML 변환 실패",
-              message: "HWPML을 HTML로 변환할 수 없습니다.",
-            });
-            return;
-          }
-
-          // HTML에서 텍스트 추출 (클라이언트에서 사용)
           const text = extractTextFromHtml(html);
-
-          // HWPML에서 직접 텍스트 줄 추출 (더 정확한 추출, 페이지 정보 포함)
-          const { lines: textLines, pageBreaks } =
-            extractTextLinesFromHwpml(hml);
-          console.log(
-            "HWPML 텍스트 줄 추출 성공, 줄 수:",
-            textLines.length,
-            "페이지 브레이크:",
-            pageBreaks.length
-          );
+          const { lines: textLines, pageBreaks } = extractTextLinesFromHwpml(hml);
 
           res.json({
             success: true,
             html: html,
             text: text,
-            textLines: textLines, // 줄 단위로 분리된 텍스트
-            pageBreaks: pageBreaks, // 페이지 브레이크 인덱스 배열 (각 페이지 브레이크 이후의 첫 번째 줄 인덱스)
+            textLines: textLines,
+            pageBreaks: pageBreaks,
             hml: hml,
             metadata: doc._hwp_meta || null,
           });
-          return;
         } catch (parseError) {
           console.error("HWP 파싱 오류:", parseError);
           res.status(500).json({
@@ -605,11 +439,9 @@ app.post(
                 ? parseError.message
                 : String(parseError),
           });
-          return;
         }
       });
     } catch (error) {
-      // 임시 파일 삭제
       try {
         unlinkSync(tempFilePath);
       } catch (deleteError) {
@@ -617,7 +449,7 @@ app.post(
       }
 
       console.error("HWP 처리 오류:", error);
-      return res.status(500).json({
+      res.status(500).json({
         error: "파일 처리 실패",
         message: error instanceof Error ? error.message : String(error),
       });
@@ -625,35 +457,62 @@ app.post(
   }
 );
 
-// Y.js WebSocket 지원을 위한 WebSocket 서버 설정
-// @y/websocket-server의 setupWSConnection을 사용하여 올바른 프로토콜 처리
+// 에러 핸들러 미들웨어
+app.use((err: Error, req: Request, res: Response, next: any) => {
+  console.error("서버 오류:", err);
+  res.status(500).json({
+    error: "내부 서버 오류",
+    message: process.env.NODE_ENV === "development" ? err.message : undefined,
+  });
+});
+
+// 404 핸들러
+app.use((req: Request, res: Response) => {
+  res.status(404).json({ error: "엔드포인트를 찾을 수 없습니다." });
+});
+
+// Y.js WebSocket 서버 설정
 const wss = new WebSocketServer({ port: YJS_WS_PORT });
 
-wss.on("connection", (ws, req) => {
-  console.log("Y.js WebSocket 연결 시도:", req.url);
+wss.on("connection", (ws: any, req: any) => {
+  if (isShuttingDown) {
+    ws.close(1013, "서버가 종료 중입니다.");
+    return;
+  }
 
-  // @y/websocket-server의 공식 setupWSConnection 사용
-  // 이 함수가 Y.js 프로토콜을 정확히 처리합니다
+  activeConnections.add(ws);
+  console.log("Y.js WebSocket 연결:", req.url);
+
   setupWSConnection(ws, req, {
     docName: (req.url || "").slice(1).split("?")[0] || "drawing-room",
     gc: true,
   });
 
   ws.on("close", () => {
-    console.log("Y.js WebSocket 연결 종료됨:", req.url);
+    activeConnections.delete(ws);
+    console.log("Y.js WebSocket 연결 종료:", req.url);
+  });
+
+  ws.on("error", (error: any) => {
+    console.error("Y.js WebSocket 오류:", error);
+    activeConnections.delete(ws);
   });
 });
 
 // Socket.IO 연결 처리
 io.on("connection", (socket) => {
+  if (isShuttingDown) {
+    socket.disconnect(true);
+    return;
+  }
+
+  activeConnections.add(socket);
   console.log("사용자 연결됨:", socket.id);
 
   // 방 참가
   socket.on("join-room", (roomId: string) => {
     socket.join(roomId);
     console.log(`사용자 ${socket.id}가 방 ${roomId}에 참가했습니다.`);
-
-    // 방의 다른 사용자들에게 새 사용자 알림
     socket.to(roomId).emit("user-joined", socket.id);
   });
 
@@ -682,7 +541,7 @@ io.on("connection", (socket) => {
     socket.to(data.roomId).emit("chat-message", data);
   });
 
-  // 그림 그리기 데이터 (Y.js 동기화)
+  // 그림 그리기 데이터
   socket.on("drawing-data", (data) => {
     socket.to(data.roomId).emit("drawing-data", data);
   });
@@ -693,13 +552,36 @@ io.on("connection", (socket) => {
   });
 
   // 연결 해제
-  socket.on("disconnect", () => {
-    console.log("사용자 연결 해제됨:", socket.id);
+  socket.on("disconnect", (reason) => {
+    activeConnections.delete(socket);
+    console.log("사용자 연결 해제됨:", socket.id, reason);
+  });
+
+  socket.on("error", (error) => {
+    console.error("Socket.IO 오류:", error);
+    activeConnections.delete(socket);
   });
 });
 
+// 서버 시작
 server.listen(PORT, () => {
   console.log(`🚀 서버가 포트 ${PORT}에서 실행 중입니다.`);
   console.log(`📡 Socket.IO 서버 준비 완료`);
-  console.log(`🔗 Y.js WebSocket 서버가 포트 5001에서 실행 중입니다.`);
+  console.log(`🔗 Y.js WebSocket 서버가 포트 ${YJS_WS_PORT}에서 실행 중입니다.`);
+  console.log(`💚 헬스 체크: http://localhost:${PORT}/health`);
+});
+
+// 서버 오류 처리
+server.on("error", (error: NodeJS.ErrnoException) => {
+  if (error.code === "EADDRINUSE") {
+    console.error(`포트 ${PORT}가 이미 사용 중입니다.`);
+    process.exit(1);
+  } else {
+    console.error("서버 오류:", error);
+    process.exit(1);
+  }
+});
+
+wss.on("error", (error: any) => {
+  console.error("WebSocket 서버 오류:", error);
 });

@@ -1,5 +1,6 @@
 node_modules
-dist
+src
+public
 build
 *.log
 .DS_Store
@@ -11,6 +12,11 @@ build
 coverage
 .nyc_output
 *.tsbuildinfo
+tsconfig.json
+tsconfig.lib.json
+rollup.config.js
+config-overrides.js
+.eslintrc*
+.prettierrc*
+README.md
 
-# 테스트 프로젝트
-test-lib-usage/
