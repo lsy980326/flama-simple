@@ -29,6 +29,7 @@ export { TxtAdapter } from "./documents/adapters/TxtAdapter";
 export { DocxAdapter } from "./documents/adapters/DocxAdapter";
 export { MeAdapter } from "./documents/adapters/MeAdapter";
 export { HwpAdapter } from "./documents/adapters/HwpAdapter";
+export { PdfAdapter } from "./documents/adapters/PdfAdapter";
 export { ImageAdapter } from "./documents/adapters/ImageAdapter";
 export { MemoryStorageProvider } from "./documents/storage/providers/MemoryStorageProvider";
 export { IndexedDBStorageProvider } from "./documents/storage/providers/IndexedDBStorageProvider";
