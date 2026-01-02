@@ -678,6 +678,7 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
   const rootRef = React.useRef<HTMLElement | null>(null);
   const [rootElement, setRootElement] = React.useState<HTMLElement | null>(null);
   const blockRefs = React.useRef(new Map<string, HTMLElement>());
+  const imageUrlCacheRef = React.useRef<Map<string, string>>(new Map());
   const [snapshot, setSnapshot] = React.useState<AnnotationSnapshot>({
     annotations: [],
     notes: [],
@@ -685,6 +686,30 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
   const [noteDrafts, setNoteDrafts] = React.useState<Record<string, string>>(
     {}
   );
+
+  const getImageUrl = React.useCallback((resourceId: string): string | null => {
+    const images = document.resources?.images;
+    const resource = images?.[resourceId];
+    if (!resource) return null;
+
+    const cached = imageUrlCacheRef.current.get(resourceId);
+    if (cached) return cached;
+
+    const blob = new Blob([resource.data], {
+      type: resource.mimeType || "application/octet-stream",
+    });
+    const url = URL.createObjectURL(blob);
+    imageUrlCacheRef.current.set(resourceId, url);
+    return url;
+  }, [document.resources?.images]);
+
+  // 문서가 바뀌면 기존 object URL 해제
+  React.useEffect(() => {
+    return () => {
+      imageUrlCacheRef.current.forEach((url) => URL.revokeObjectURL(url));
+      imageUrlCacheRef.current.clear();
+    };
+  }, [document]);
   
   // 페이지네이션 상태
   const [currentPage, setCurrentPage] = React.useState(0);
@@ -1642,6 +1667,11 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
               );
               const blockSearchMatches = searchMatchesByBlock.get(block.id);
               const segments = buildSegments(block, textContent, annotations, blockSearchMatches);
+              const isImageBlock = block.type === "image";
+              const imageSrc = isImageBlock ? getImageUrl(block.resourceId) : null;
+              const imageCaptionText = isImageBlock
+                ? block.caption?.map((run) => run.text).join("") ?? ""
+                : "";
               
               // 페이지 구분선 표시 (페이지 시작이 아니고, 페이지네이션이 활성화된 경우)
               const showPageBreak = pagination?.enabled && 
@@ -1673,6 +1703,7 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
                     className={cx("document-viewer__block", {
                       "document-viewer__block--heading": block.type === "heading",
                       "document-viewer__block--list": block.type === "list",
+                      "document-viewer__block--image": block.type === "image",
                     })}
                   >
                     {(() => {
@@ -1682,7 +1713,28 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
                       ) : null;
                     })()}
                       <div className="document-viewer__block-content">
-                        {segments.map((segment, index) => {
+                        {isImageBlock ? (
+                          <figure className="document-viewer__image">
+                            {imageSrc ? (
+                              <img
+                                className="document-viewer__image-img"
+                                src={imageSrc}
+                                alt={imageCaptionText || "PDF image"}
+                                loading="lazy"
+                              />
+                            ) : (
+                              <div className="document-viewer__image-missing">
+                                이미지를 불러올 수 없습니다.
+                              </div>
+                            )}
+                            {imageCaptionText ? (
+                              <figcaption className="document-viewer__image-caption">
+                                {imageCaptionText}
+                              </figcaption>
+                            ) : null}
+                          </figure>
+                        ) : (
+                          segments.map((segment, index) => {
                           // 검색 결과 하이라이트
                           if (segment.isSearchMatch) {
                             const isCurrentMatch = segment.searchMatchIndex === currentSearchIndex;
@@ -1744,7 +1796,8 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
                               {segment.text}
                             </React.Fragment>
                           );
-                        })}
+                        })
+                        )}
                       </div>
                   </article>
                 </React.Fragment>
