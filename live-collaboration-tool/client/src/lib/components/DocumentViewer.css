@@ -216,6 +216,130 @@
   min-width: 0;
 }
 
+/* Image block */
+.document-viewer__block--image .document-viewer__block-content {
+  padding: 0;
+}
+
+.document-viewer__image {
+  margin: 0;
+}
+
+.document-viewer__image-img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+}
+
+.document-viewer__image-caption {
+  margin-top: 8px;
+  font-size: 13px;
+  color: #666;
+  line-height: 1.4;
+}
+
+.document-viewer__image-missing {
+  padding: 12px;
+  border-radius: 6px;
+  background: #f3f4f6;
+  color: #6b7280;
+  font-size: 13px;
+}
+
+/* ===== PDF (canvas + text layer) ===== */
+.pdf-page {
+  background: #fff;
+  box-shadow: 0 2px 18px rgba(0, 0, 0, 0.08);
+}
+
+.pdf-page {
+  position: relative;
+}
+
+/* 캔버스는 배경일 뿐, 이벤트를 받지 않음 */
+.pdf-page canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  z-index: 1;
+  touch-action: none;
+}
+
+/* pdf.js 텍스트 레이어(선택 가능) - 캔버스 위에 정확히 올라가도록 */
+.pdf-page .react-pdf__Page__textContent {
+  position: absolute;
+  top: 0;
+  left: 0;
+  margin: 0;
+  padding: 0;
+  user-select: text;
+  -webkit-user-select: text;
+  z-index: 100; /* 캔버스(1)보다 훨씬 위에 */
+  pointer-events: auto;
+  cursor: text;
+  /* transform이 위치를 어긋나게 할 수 있으므로 명시적으로 설정 */
+  transform: none;
+}
+
+/* 텍스트 레이어가 가장 위에서 모든 이벤트를 수신 */
+.pdf-page .textLayer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  margin: 0;
+  padding: 0;
+  overflow: clip;
+  line-height: 1;
+  letter-spacing: 0;
+  pointer-events: auto;
+  z-index: 100; /* 어노테이션보다 높게 설정하여 선택 우선권 확보 */
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
+  transform: none;
+  transform-origin: 0 0;
+}
+
+.pdf-page .textLayer :is(span, br),
+.pdf-page .react-pdf__Page__textContent :is(span, br) {
+  /* 완전 투명(textColor=transparent)이면 브라우저에 따라 selection 하이라이트가 안 보일 수 있습니다.
+     거의 투명한 텍스트로 두면 선택 영역 배경이 확실히 표시됩니다. */
+  color: rgba(0, 0, 0, 0.01);
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+  user-select: text;
+  -webkit-user-select: text;
+  pointer-events: auto; /* span이 마우스 이벤트를 받을 수 있도록 */
+}
+
+.pdf-page .textLayer .endOfContent {
+  display: block;
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: 0;
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 드래그 선택이 "안 되는 것처럼 보이는" 문제 방지: 선택 영역 배경을 명시 */
+.pdf-page .textLayer ::selection {
+  background: rgba(0, 0, 255, 0.25);
+}
+
+.pdf-page .textLayer ::-moz-selection {
+  background: rgba(0, 0, 255, 0.25);
+}
+
+/* pdf.js TextLayerBuilder가 selection 범위를 관리할 때 사용하는 상태 */
+.pdf-page .textLayer.selecting .endOfContent {
+  top: 0;
+}
+
 .document-viewer__block--heading {
   font-size: 28px;
   font-weight: 600;
@@ -576,4 +700,5 @@
     min-width: 100px;
   }
 }
+
 
