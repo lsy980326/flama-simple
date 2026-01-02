@@ -1885,7 +1885,7 @@ export default function DocumentViewerDemo(): React.ReactElement {
       const parser = adapterRegistry.findParser(descriptor);
       if (!parser) {
         setErrorMessage(
-          `지원하지 않는 파일 형식입니다: .${extension} (현재 지원: .txt, .docx, .me, .md, .hwp)`
+          `지원하지 않는 파일 형식입니다: .${extension} (현재 지원: .txt, .docx, .me, .md, .pdf, .hwp)`
         );
         return;
       }
