@@ -384,6 +384,9 @@ app.post(
           res.status(500).json({
             error: "HWP 파일 파싱 실패",
             message: err.message,
+            hint:
+              "node-hwp(0.1.0-alpha)가 이 HWP를 지원하지 않는 경우가 있습니다(예: 이미지/신규 태그/도형 컴포넌트). " +
+              "가능하면 HWP를 PDF로 저장하여 업로드하거나, 다른 HWP 파서(또는 최신 버전)로 교체하세요.",
           });
           return;
         }

@@ -106,30 +106,43 @@ const extractHwpFromServer = async (
   buffer: ArrayBuffer
 ): Promise<HwpParseResult | null> => {
   // 환경변수에서 API URL 가져오기
-  // 브라우저 환경에서는 process가 정의되지 않을 수 있으므로 안전하게 처리
+  // - CRA: REACT_APP_API_URL
+  // - Vite: VITE_HWP_API_URL (권장)
+  // - 런타임 오버라이드: window.__LIVE_COLLAB_HWP_API_URL__
   let envUrl: string | undefined;
   try {
-    if (typeof window !== "undefined" && (window as any).process?.env) {
-      envUrl = (window as any).process.env.REACT_APP_API_URL;
-    }
+    const w = typeof window !== "undefined" ? (window as any) : undefined;
+    envUrl =
+      w?.__LIVE_COLLAB_HWP_API_URL__ ||
+      (w?.process?.env?.REACT_APP_API_URL as string | undefined);
   } catch {
-    // process 접근 실패 시 무시 (브라우저 환경 등)
+    // ignore
+  }
+  try {
+    const viteEnv = (import.meta as any)?.env;
+    envUrl = envUrl ?? (viteEnv?.VITE_HWP_API_URL as string | undefined);
+    envUrl = envUrl ?? (viteEnv?.REACT_APP_API_URL as string | undefined);
+  } catch {
+    // ignore
   }
   const envUrlTrimmed = envUrl?.trim();
   const sameOrigin =
     typeof window !== "undefined" ? window.location.origin : undefined;
   const candidates = [
     envUrlTrimmed, // 환경변수 우선
-    sameOrigin ? `${sameOrigin}` : undefined, // 같은 오리진 (프록시 설정 시 /api로 라우팅)
     "http://localhost:5000",
     "http://127.0.0.1:5000",
     "http://localhost:5173",
     "http://localhost:3000",
+    // 같은 오리진 (프록시 설정 시 /api로 라우팅) - dev 서버(5173/5175 등)에서 404 노이즈가 많아 마지막에 시도
+    sameOrigin ? `${sameOrigin}` : undefined,
   ].filter((v): v is string => !!v);
 
   const formData = new FormData();
   const blob = new Blob([buffer], { type: "application/x-hwp" });
   formData.append("file", blob, "document.hwp");
+
+  let lastFailure: { base: string; message: string } | null = null;
 
   for (const base of candidates) {
     try {
@@ -146,6 +159,11 @@ const extractHwpFromServer = async (
         ) {
           return result;
         }
+        // 200이지만 success가 false거나 내용이 없는 경우도 실패로 기록
+        lastFailure = {
+          base,
+          message: result?.error || result?.message || "HWP 파싱 응답이 비어있습니다.",
+        };
       } else {
         const errorData = await response
           .json()
@@ -155,10 +173,27 @@ const extractHwpFromServer = async (
           base,
           errorData.error || errorData.message
         );
+        lastFailure = {
+          base,
+          message: errorData.error || errorData.message || `HTTP ${response.status}`,
+        };
       }
     } catch (error) {
       console.warn("서버 API 호출 실패:", base, error);
+      lastFailure = {
+        base,
+        message: error instanceof Error ? error.message : String(error),
+      };
     }
+  }
+
+  // 실패 사유를 상위로 전달해서, 사용자가 "URL 문제"인지 "서버 500"인지 바로 알 수 있게 합니다.
+  if (lastFailure) {
+    return {
+      success: false,
+      error: "HWP 파서 실패",
+      message: `${lastFailure.base}: ${lastFailure.message}`,
+    };
   }
   return null;
 };
@@ -700,8 +735,15 @@ export class HwpAdapter implements DocumentAdapter {
 
     // 서버 API 실패 시 안내 텍스트가 포함된 문서 반환(빈 문서가 아닌 표시 가능 문서)
     const fallbackTitle = name ?? "한글 문서";
-    const fallbackText =
-      "한글(HWP) 파서 서버에 연결할 수 없습니다. 환경변수 REACT_APP_API_URL을 설정하거나 HWP 파서 API를 실행하세요.";
+    const fallbackTextBase =
+      "한글(HWP)은 브라우저에서 직접 파싱하지 않고, 별도 파서 서버(`/api/hwp/parse`)가 필요합니다. " +
+      "HWP 파서 API를 실행하거나, Vite라면 `VITE_HWP_API_URL`, CRA라면 `REACT_APP_API_URL`을 설정하세요. " +
+      "또는 런타임에 `window.__LIVE_COLLAB_HWP_API_URL__`로도 지정할 수 있습니다.";
+    const detail =
+      serverResult && !serverResult.success
+        ? `\n\n[서버 응답]\n${serverResult.message || serverResult.error || "알 수 없는 오류"}`
+        : "";
+    const fallbackText = fallbackTextBase + detail;
     return {
       id: `hwp-fallback-${Date.now()}`,
       metadata: {
