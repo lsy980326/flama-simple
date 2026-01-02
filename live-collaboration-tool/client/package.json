@@ -34,7 +34,9 @@
     "marked": "^11.2.0",
     "multer": "^2.0.2",
     "node-hwp": "0.1.0-alpha",
+    "pdfjs-dist": "^5.4.449",
     "pixi.js": "^8.14.0",
+    "react-pdf": "^10.2.0",
     "socket.io-client": "^4.8.1",
     "web-vitals": "^2.1.4",
     "y-indexeddb": "^9.0.12",
@@ -72,6 +74,7 @@
   "devDependencies": {
     "@rollup/plugin-commonjs": "^28.0.1",
     "@rollup/plugin-node-resolve": "^15.3.0",
+    "@rollup/plugin-terser": "^0.4.4",
     "@rollup/plugin-typescript": "^12.1.1",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
@@ -82,6 +85,7 @@
     "@types/node": "^16.18.126",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
+    "@types/react-pdf": "^6.2.0",
     "null-loader": "^4.0.1",
     "react": "^19.2.0",
     "react-app-rewired": "^2.2.1",
@@ -90,7 +94,6 @@
     "rollup": "^4.28.1",
     "rollup-plugin-peer-deps-external": "^2.2.4",
     "rollup-plugin-postcss": "^4.0.2",
-    "@rollup/plugin-terser": "^0.4.4",
     "typescript": "^4.9.5"
   }
 }
