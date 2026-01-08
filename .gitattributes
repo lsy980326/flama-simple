@@ -1,0 +1,7 @@
+# git-crypt 암호화 설정
+.env filter=git-crypt diff=git-crypt
+.env* filter=git-crypt diff=git-crypt
+**/.env filter=git-crypt diff=git-crypt
+**/.env* filter=git-crypt diff=git-crypt
+
+
