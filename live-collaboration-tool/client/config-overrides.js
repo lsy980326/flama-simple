@@ -16,6 +16,16 @@ module.exports = function override(config, env) {
     child_process: false,
   };
 
+  // CSS 파일 처리 설정 (pdfjs-dist CSS 지원)
+  config.module.rules.push({
+    test: /\.css$/,
+    use: [
+      require.resolve('style-loader'),
+      require.resolve('css-loader'),
+    ],
+    include: /node_modules\/pdfjs-dist/,
+  });
+
   return config;
 };
 

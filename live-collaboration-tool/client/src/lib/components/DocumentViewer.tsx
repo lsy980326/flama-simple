@@ -842,7 +842,11 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
           const { blockId, annotationId } = pendingScrollBlock.current;
           // DOM 업데이트를 기다린 후 스크롤
           setTimeout(() => {
-            scrollToBlockInPage(blockId, annotationId);
+            if (annotationId && scrollToAnnotation) {
+              scrollToAnnotation(annotationId);
+            } else {
+              scrollToBlockInPage(blockId, annotationId);
+            }
             pendingScrollBlock.current = null;
           }, 100);
         } else {
@@ -851,7 +855,7 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
         }
       }
     }
-  }, [pageInfo.currentPageIndex, pagination?.enabled, rootElement, scrollToBlockInPage]);
+  }, [pageInfo.currentPageIndex, pagination?.enabled, rootElement, scrollToBlockInPage, scrollToAnnotation]);
   
   // 블록 ID를 페이지 인덱스로 변환하는 함수
   const findPageForBlock = React.useCallback((blockId: string): number | null => {
@@ -950,17 +954,23 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
   // 어노테이션의 excerpt 가져오기
   const getExcerpt = React.useCallback(
     (annotation: AnnotationEntry) => {
+      // PDF 등 custom block은 toPlainText가 비어있을 수 있으므로 meta.excerpt를 우선 사용
+      const metaExcerpt =
+        typeof annotation.meta?.excerpt === "string"
+          ? (annotation.meta.excerpt as string)
+          : "";
+
       // 전체 문서의 블록에서 찾기 (현재 페이지에 없는 블록도 포함)
       const targetBlock = document.blocks.find(
         (block) => block.id === annotation.range.blockId
       );
       if (!targetBlock) {
-        return "";
+        return metaExcerpt.trim();
       }
 
       const textContent = toPlainText(targetBlock);
       if (!textContent || textContent.length === 0) {
-        return "";
+        return metaExcerpt.trim();
       }
 
       const { startOffset, endOffset } = annotation.range;
@@ -1064,7 +1074,7 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
     if (!annotation) {
       return;
     }
-    
+
     // 페이지네이션이 활성화된 경우 해당 페이지로 이동
     if (pagination?.enabled) {
       const targetPage = findPageForAnnotation(annotationId);
@@ -1079,14 +1089,16 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
         return;
       }
     }
-    
-    // 현재 페이지에 있는 경우 (또는 페이지네이션이 비활성화된 경우) 바로 스크롤
-    scrollToBlockInPage(annotation.range.blockId, annotationId);
-    
-    // 외부 scrollToAnnotation도 호출 (페이지네이션이 비활성화된 경우)
-    if (scrollToAnnotation && !pagination?.enabled) {
+
+    // 외부 scrollToAnnotation이 제공된 경우(특히 PDF처럼 DOM에 data-annotation-id가 없는 경우),
+    // 내부의 block center 스크롤(scrollIntoView) 대신 외부 로직을 우선 사용합니다.
+    if (scrollToAnnotation) {
       scrollToAnnotation(annotationId);
+      return;
     }
+    
+    // fallback: 현재 페이지에 있는 경우 바로 스크롤
+    scrollToBlockInPage(annotation.range.blockId, annotationId);
   }, [snapshot.annotations, pagination?.enabled, findPageForAnnotation, pageInfo.currentPageIndex, scrollToBlockInPage, scrollToAnnotation]);
 
   React.useEffect(() => {

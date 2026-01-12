@@ -1,5 +1,6 @@
 import React from "react";
 import { DocumentViewer, DocumentViewerAction } from "./DocumentViewer";
+import { PdfPageBlock } from "./PdfPageBlock";
 import { AnnotationService } from "../annotations/AnnotationService";
 import {
   DocumentAdapterRegistry,
@@ -113,6 +114,14 @@ export const DocumentViewerWithUpload: React.FC<
     endOffset: number;
   } | null>(null);
   const [selectedText, setSelectedText] = React.useState("");
+  // 브라우저 native selection이 mouseup 직후 사라져도(또는 우리가 removeAllRanges 해도)
+  // 마지막 선택을 유지/재사용할 수 있도록 저장합니다.
+  const lastValidRangeRef = React.useRef<{
+    blockId: string;
+    startOffset: number;
+    endOffset: number;
+  } | null>(null);
+  const lastValidTextRef = React.useRef<string>("");
   const [renderHandle, setRenderHandle] = React.useState<RenderHandle | null>(
     null
   );
@@ -134,309 +143,7 @@ export const DocumentViewerWithUpload: React.FC<
   const pdfDocPromiseRef = React.useRef<Promise<any> | null>(null);
   const pdfDocIdRef = React.useRef<string | null>(null);
 
-  /**
-   * PDF 페이지 블록 렌더링 (캔버스 + 텍스트 레이어 + 어노테이션 오버레이)
-   */
-  const PdfPageBlock: React.FC<{
-    blockId: string;
-    pageNum: number;
-    pdfDocPromise: Promise<any>;
-    annotations: AnnotationEntry[];
-  }> = ({ blockId, pageNum, pdfDocPromise, annotations }) => {
-    const hostRef = React.useRef<HTMLDivElement | null>(null);
-    const pageRef = React.useRef<HTMLDivElement | null>(null);
-
-    React.useEffect(() => {
-      let cancelled = false;
-
-      const run = async () => {
-        const host = hostRef.current;
-        if (!host) return;
-        host.innerHTML = "";
-
-        const pageContainer = document.createElement("div");
-        pageContainer.className = "pdf-page";
-        pageContainer.dataset.pdfPageBlockId = blockId;
-        pageContainer.style.position = "relative";
-        pageContainer.style.margin = "0 auto 24px";
-        host.appendChild(pageContainer);
-        pageRef.current = pageContainer;
-
-        const pdf = await pdfDocPromise;
-        const page = await pdf.getPage(pageNum);
-        const scale = 1.5;
-        const viewport = page.getViewport({ scale });
-
-        // pdf_viewer.css의 TextLayer는 CSS 변수(--scale-factor 등)에 의존합니다.
-        // pdfViewer/page 래퍼를 쓰지 않는 커스텀 렌더링이므로, 페이지 컨테이너에 직접 값을 주입합니다.
-        // PDF_TO_CSS_UNITS = 96/72 (pdf.js 내부 상수와 동일)
-        const cssScaleFactor = scale * (96 / 72);
-        pageContainer.style.setProperty(
-          "--scale-factor",
-          String(cssScaleFactor)
-        );
-        pageContainer.style.setProperty("--user-unit", "1");
-        pageContainer.style.setProperty(
-          "--total-scale-factor",
-          String(cssScaleFactor)
-        );
-
-        if (cancelled) return;
-
-        // 1. 캔버스와 컨테이너 크기를 viewport와 1:1로 고정 (오차 원천 차단)
-        const canvas = document.createElement("canvas");
-        const ctx = canvas.getContext("2d");
-        if (!ctx) throw new Error("Canvas context를 가져올 수 없습니다.");
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        canvas.style.width = `${viewport.width}px`;
-        canvas.style.height = `${viewport.height}px`;
-        canvas.style.position = "absolute";
-        canvas.style.top = "0";
-        canvas.style.left = "0";
-
-        pageContainer.style.width = `${viewport.width}px`;
-        pageContainer.style.height = `${viewport.height}px`;
-        pageContainer.appendChild(canvas);
-
-        await page.render({ canvasContext: ctx, viewport, canvas }).promise;
-        if (cancelled) return;
-
-        // text layer (선택/드래그/검색용) - pdf.js 공식 TextLayerBuilder 사용 (좌표/스케일 정확)
-        try {
-          // TextLayerBuilder는 pdf_viewer.css의 스타일/변수에 의존합니다.
-          // (예: --scale-factor) 커스텀 뷰어에서도 정확한 위치/선택을 위해 CSS를 로드합니다.
-          await import("pdfjs-dist/web/pdf_viewer.css");
-          const pdfViewer = await import("pdfjs-dist/web/pdf_viewer.mjs");
-          const builder = new (pdfViewer as any).TextLayerBuilder({
-            pdfPage: page,
-            enablePermissions: false,
-          });
-
-          // 우리가 기존에 쓰던 클래스도 같이 붙여서(선택/탐색 로직 재사용) 유지합니다.
-          builder.div.classList.add("react-pdf__Page__textContent");
-
-          // 위치/레이어링 - 캔버스와 정확히 같은 위치에 오도록 설정
-          builder.div.style.position = "absolute";
-          builder.div.style.left = "0";
-          builder.div.style.top = "0";
-          builder.div.style.width = `${viewport.width}px`;
-          builder.div.style.height = `${viewport.height}px`;
-          builder.div.style.zIndex = "100"; // 캔버스(1)보다 훨씬 위에, 어노테이션(30)보다도 위에
-          builder.div.style.pointerEvents = "auto";
-          builder.div.style.userSelect = "text";
-          (builder.div.style as any).webkitUserSelect = "text";
-          builder.div.style.cursor = "text";
-          builder.div.style.margin = "0";
-          builder.div.style.padding = "0";
-          builder.div.style.transform = "none"; // transform이 위치를 어긋나게 할 수 있음
-
-          // 중요: PDF.js 엔진이 사용하는 스케일 변수 주입
-          // viewport.scale을 직접 사용하여 정확한 위치 계산 보장
-          builder.div.style.setProperty(
-            "--scale-factor",
-            String(viewport.scale)
-          );
-          builder.div.style.setProperty("--user-unit", "1");
-          builder.div.style.setProperty(
-            "--total-scale-factor",
-            String(viewport.scale)
-          );
-
-          await builder.render({ viewport });
-
-          // 렌더링 후 위치 검증 및 조정
-          // TextLayerBuilder가 생성한 span들이 정확한 위치에 있는지 확인
-          const spans = builder.div.querySelectorAll<HTMLElement>("span");
-          spans.forEach((span) => {
-            // span의 pointer-events 명시적으로 설정
-            span.style.pointerEvents = "auto";
-            // span의 transform이 부모와 일치하도록 보장
-            if (span.style.transform && span.style.transform !== "none") {
-              // transform은 유지하되, 부모의 transform과 충돌하지 않도록
-            }
-          });
-
-          // span에 blockId를 심어서 선택/레이아웃 계산이 range.blockId로 매핑되게 합니다.
-          builder.div.querySelectorAll<HTMLElement>("span").forEach((span) => {
-            span.dataset.pdfBlockId = blockId;
-            // span의 pointer-events도 명시적으로 설정
-            span.style.pointerEvents = "auto";
-          });
-
-          pageContainer.appendChild(builder.div);
-        } catch (e) {
-          console.warn("PDF 텍스트 레이어(TextLayerBuilder) 렌더 실패:", e);
-        }
-      };
-
-      run().catch((e) => {
-        console.error("PDF 페이지 렌더 실패:", e);
-      });
-
-      return () => {
-        cancelled = true;
-      };
-    }, [blockId, pageNum, pdfDocPromise]);
-
-    // annotation overlay (텍스트 레이어 위에 정확히 맞춰서 렌더링)
-    const [overlayNodes, setOverlayNodes] = React.useState<React.ReactNode[]>(
-      []
-    );
-    const overlayContainerRef = React.useRef<HTMLDivElement | null>(null);
-
-    React.useEffect(() => {
-      const pageEl = pageRef.current;
-      if (!pageEl) {
-        setOverlayNodes([]);
-        return;
-      }
-
-      // 텍스트 레이어 찾기
-      const textLayer = pageEl.querySelector<HTMLElement>(
-        ".react-pdf__Page__textContent, .textLayer"
-      );
-      if (!textLayer) {
-        setOverlayNodes([]);
-        return;
-      }
-
-      const updateOverlays = () => {
-        const nodes: React.ReactNode[] = [];
-
-        annotations.forEach((a) => {
-          // 어노테이션의 range 정보 가져오기
-          const range = a.range;
-          if (!range || range.blockId !== blockId) return;
-
-          // 텍스트 레이어에서 해당 범위의 span들 찾기
-          const allSpans = Array.from(
-            textLayer.querySelectorAll<HTMLElement>(
-              `span[data-pdf-block-id="${blockId}"]`
-            )
-          );
-          if (!allSpans.length) return;
-
-          // startOffset과 endOffset에 해당하는 span들 찾기
-          let offset = 0;
-          const selectedSpans: HTMLElement[] = [];
-
-          for (const span of allSpans) {
-            const spanText = span.textContent || "";
-            const spanStart = offset;
-            const spanEnd = offset + spanText.length;
-            offset = spanEnd;
-
-            // 선택 범위와 겹치는 span인지 확인
-            if (
-              range.endOffset !== undefined &&
-              range.startOffset !== undefined
-            ) {
-              if (spanEnd > range.startOffset && spanStart < range.endOffset) {
-                selectedSpans.push(span);
-              }
-            }
-          }
-
-          if (!selectedSpans.length) return;
-
-          // 각 span의 실제 위치를 사용해서 오버레이 생성
-          selectedSpans.forEach((span, spanIdx) => {
-            const spanRect = span.getBoundingClientRect();
-            const textLayerRect = textLayer.getBoundingClientRect();
-
-            // 텍스트 레이어 기준 상대 위치 계산
-            const left = spanRect.left - textLayerRect.left;
-            const top = spanRect.top - textLayerRect.top;
-
-            if (a.type === "highlight") {
-              nodes.push(
-                <div
-                  key={`${a.id}-span-${spanIdx}`}
-                  style={{
-                    position: "absolute",
-                    left: `${left}px`,
-                    top: `${top}px`,
-                    width: `${spanRect.width}px`,
-                    height: `${spanRect.height}px`,
-                    background: a.style?.color ?? "rgba(250, 204, 21, 0.6)",
-                    pointerEvents: "none",
-                    zIndex: 30, // 텍스트 레이어(20) 위에 표시
-                  }}
-                />
-              );
-            } else if (a.type === "underline") {
-              nodes.push(
-                <div
-                  key={`${a.id}-span-${spanIdx}`}
-                  style={{
-                    position: "absolute",
-                    left: `${left}px`,
-                    top: `${top + spanRect.height - 2}px`,
-                    width: `${spanRect.width}px`,
-                    height: `2px`,
-                    background: a.style?.underlineColor ?? "#2563eb",
-                    pointerEvents: "none",
-                    zIndex: 30, // 텍스트 레이어(20) 위에 표시
-                  }}
-                />
-              );
-            }
-          });
-        });
-
-        setOverlayNodes(nodes);
-
-        // 오버레이 컨테이너 위치 업데이트
-        if (overlayContainerRef.current) {
-          const textLayerRect = textLayer.getBoundingClientRect();
-          const pageRect = pageEl.getBoundingClientRect();
-          overlayContainerRef.current.style.position = "absolute";
-          overlayContainerRef.current.style.left = `${
-            textLayerRect.left - pageRect.left
-          }px`;
-          overlayContainerRef.current.style.top = `${
-            textLayerRect.top - pageRect.top
-          }px`;
-          overlayContainerRef.current.style.width = `${textLayerRect.width}px`;
-          overlayContainerRef.current.style.height = `${textLayerRect.height}px`;
-        }
-      };
-
-      // 초기 업데이트
-      updateOverlays();
-
-      // 리사이즈/스크롤 시 업데이트
-      const resizeObserver = new ResizeObserver(updateOverlays);
-      resizeObserver.observe(textLayer);
-      resizeObserver.observe(pageEl);
-
-      // 스크롤 이벤트 리스너
-      const handleScroll = () => updateOverlays();
-      window.addEventListener("scroll", handleScroll, true);
-
-      return () => {
-        resizeObserver.disconnect();
-        window.removeEventListener("scroll", handleScroll, true);
-      };
-    }, [annotations, blockId]);
-
-    return (
-      <div style={{ position: "relative" }}>
-        <div ref={hostRef} />
-        <div
-          ref={overlayContainerRef}
-          style={{
-            position: "absolute",
-            pointerEvents: "none",
-            zIndex: 30, // 텍스트 레이어(20) 위에 표시
-          }}
-        >
-          {overlayNodes}
-        </div>
-      </div>
-    );
-  };
+  // NOTE: PdfPageBlock은 별도 파일로 분리하여 렌더마다 언마운트/리마운트되는 문제를 방지합니다.
 
   class PdfTextLayerRenderHandle implements RenderHandle {
     constructor(
@@ -699,20 +406,356 @@ export const DocumentViewerWithUpload: React.FC<
     fileInputRef.current?.click();
   }, []);
 
-  // 텍스트 선택 처리
+  const scrollToAnnotation = React.useCallback(
+    (annotationId: string) => {
+      if (!rootElement) return;
+      if (!isPdfDocument) return;
+
+      const ann = annotationService
+        .listAnnotations()
+        .find((a) => a.id === annotationId);
+      if (!ann) return;
+
+      const canvasEl = rootElement.querySelector<HTMLElement>(".document-viewer__canvas");
+      if (!canvasEl) return;
+
+      const tryScroll = () => {
+        // 1) DOM에서 직접 range의 실제 rect를 계산 (layout이 아직 없거나 stale일 수 있음)
+        const blockEl = rootElement.querySelector<HTMLElement>(
+          `[data-block-id="${ann.range.blockId}"]`
+        );
+        const textLayer = blockEl?.querySelector<HTMLElement>(
+          ".textLayer, .react-pdf__Page__textContent"
+        );
+        if (textLayer) {
+          const spans = Array.from(
+            textLayer.querySelectorAll<HTMLElement>(
+              `span[data-pdf-block-id="${ann.range.blockId}"]`
+            )
+          );
+          if (spans.length) {
+            const startOffset = ann.range.startOffset ?? 0;
+            const endOffset = ann.range.endOffset ?? startOffset;
+
+            let runOffset = 0;
+            let bestRect: DOMRect | null = null;
+
+            for (const span of spans) {
+              const spanText = span.textContent || "";
+              const spanStart = runOffset;
+              const spanEnd = runOffset + spanText.length;
+              runOffset = spanEnd;
+
+              const overlapStart = Math.max(spanStart, startOffset);
+              const overlapEnd = Math.min(spanEnd, endOffset);
+              if (overlapEnd <= overlapStart) continue;
+
+              // 선택된 문자 범위를 Range로 잘라서 rect를 얻음
+              const localStart = overlapStart - spanStart;
+              const localEnd = overlapEnd - spanStart;
+
+              const walker = document.createTreeWalker(span, NodeFilter.SHOW_TEXT);
+              const textNodes: Text[] = [];
+              while (walker.nextNode()) textNodes.push(walker.currentNode as Text);
+              if (!textNodes.length) continue;
+
+              // local offset -> text node mapping
+              let acc = 0;
+              let sNode: Text = textNodes[0];
+              let eNode: Text = textNodes[textNodes.length - 1];
+              let sOff = 0;
+              let eOff = eNode.data.length;
+              for (const n of textNodes) {
+                const len = n.data.length;
+                if (localStart >= acc && localStart < acc + len) {
+                  sNode = n;
+                  sOff = localStart - acc;
+                }
+                if (localEnd >= acc && localEnd <= acc + len) {
+                  eNode = n;
+                  eOff = localEnd - acc;
+                  break;
+                }
+                acc += len;
+              }
+
+              try {
+                const r = document.createRange();
+                r.setStart(sNode, Math.max(0, Math.min(sOff, sNode.data.length)));
+                r.setEnd(eNode, Math.max(0, Math.min(eOff, eNode.data.length)));
+                const rects = Array.from(r.getClientRects()).filter((x) => x.width > 0 && x.height > 0);
+                for (const rr of rects) {
+                  const dr = new DOMRect(rr.x, rr.y, rr.width, rr.height);
+                  if (!bestRect || dr.top < bestRect.top) bestRect = dr;
+                }
+              } catch {
+                // ignore
+              }
+
+              if (bestRect) break; // 첫 overlap에서 충분
+            }
+
+            if (bestRect) {
+              const canvasRect = canvasEl.getBoundingClientRect();
+              const targetTop =
+                canvasEl.scrollTop + (bestRect.top - canvasRect.top) - 120;
+              canvasEl.scrollTo({
+                top: Math.max(0, targetTop),
+                behavior: "smooth",
+              });
+              return true;
+            }
+          }
+        }
+
+        // 2) fallback: RenderHandle이 계산한 layout 사용
+        const layoutRects = ann.layout?.[0]?.boundingRects ?? [];
+        const rect = layoutRects.length
+          ? layoutRects.reduce((min, r) => (r.top < min.top ? r : min), layoutRects[0])
+          : null;
+        if (!rect) return false;
+
+        const canvasRect = canvasEl.getBoundingClientRect();
+        const targetTop = canvasEl.scrollTop + (rect.top - canvasRect.top) - 120;
+        canvasEl.scrollTo({
+          top: Math.max(0, targetTop),
+          behavior: "smooth",
+        });
+        return true;
+      };
+
+      // textLayer가 늦게 붙는 케이스를 위해 짧게 재시도
+      let attempts = 0;
+      const tick = () => {
+        attempts += 1;
+        if (tryScroll()) return;
+        if (attempts < 30) requestAnimationFrame(tick);
+      };
+      tick();
+    },
+    [annotationService, isPdfDocument, rootElement]
+  );
+
+  // 텍스트 선택 처리 (안정 버전: mouseup에서만 계산)
+  // - 드래그 중에는 브라우저 기본 selection 표시만 사용 (깜빡임 방지)
+  // - mouseup 시점에만 선택을 계산해서 selectedRange/selectedText를 세팅
+  // - 이후 native selection을 제거하고 커스텀 오버레이로 선택영역을 유지
   React.useEffect(() => {
     if (!rootElement || !documentModel) return;
 
-    const updateSelection = () => {
+    const handleMouseUpStable = () => {
       const selection = window.getSelection();
       if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
-        setSelectedRange(null);
-        setSelectedText("");
         return;
       }
 
       const range = selection.getRangeAt(0);
       if (!rootElement.contains(range.commonAncestorContainer)) {
+        return;
+      }
+
+      const findBlockElement = (
+        node: Node
+      ): { element: HTMLElement; blockId: string } | null => {
+        let current: Node | null = node;
+        while (current) {
+          if (current instanceof HTMLElement) {
+            if (current.dataset.pdfBlockId) {
+              const pdfPage = current.closest(
+                "[data-pdf-page-block-id]"
+              ) as HTMLElement | null;
+              if (pdfPage?.dataset.pdfPageBlockId) {
+                return { element: pdfPage, blockId: pdfPage.dataset.pdfPageBlockId };
+              }
+              return { element: current, blockId: current.dataset.pdfBlockId };
+            }
+            if (current.dataset.blockId) {
+              return { element: current, blockId: current.dataset.blockId };
+            }
+          }
+          current = current.parentNode;
+        }
+        return null;
+      };
+
+      const startBlockInfo = findBlockElement(range.startContainer);
+      const endBlockInfo = findBlockElement(range.endContainer);
+      if (
+        !startBlockInfo ||
+        !endBlockInfo ||
+        startBlockInfo.blockId !== endBlockInfo.blockId
+      ) {
+        return;
+      }
+
+      const blockId = startBlockInfo.blockId;
+
+      try {
+        const isPdfTextLayer =
+          startBlockInfo.element.closest(".react-pdf__Page__textContent") !==
+          null;
+
+        let blockText = "";
+        let startOffset = 0;
+        let endOffset = 0;
+
+        if (isPdfTextLayer) {
+          const textLayer = startBlockInfo.element.closest(
+            ".textLayer, .react-pdf__Page__textContent"
+          ) as HTMLElement | null;
+          if (!textLayer) return;
+
+          const allSpans = Array.from(
+            textLayer.querySelectorAll<HTMLElement>(
+              `span[data-pdf-block-id="${blockId}"]`
+            )
+          );
+          if (!allSpans.length) return;
+
+          blockText = allSpans.map((s) => s.textContent || "").join("");
+
+          // 선택 오프셋은 오버레이 렌더링(PdfPageBlock)의 span-join 기준과 동일해야 합니다.
+          // 기존 normalizeBoundary 기반 로직은 일부 브라우저/텍스트레이어 케이스에서
+          // endOffset이 다음 span까지 "밀려" 들어가는 문제가 남아있었습니다.
+          // 여기서는 실제로 선택 Range와 교차(intersect)하는 span 목록을 기준으로
+          // start/end span을 결정하고, 각 span 내부 오프셋은 Range->toString().length로 계산합니다.
+          const offsetBefore = (idx: number) => {
+            let acc = 0;
+            for (let i = 0; i < idx; i++) acc += allSpans[i].textContent?.length || 0;
+            return acc;
+          };
+
+          const intersects = (span: HTMLElement) => {
+            try {
+              return range.intersectsNode(span);
+            } catch {
+              return false;
+            }
+          };
+
+          const selectedSpans = allSpans.filter(intersects);
+          if (!selectedSpans.length) return;
+
+          const startSpan = selectedSpans[0];
+          const endSpan = selectedSpans[selectedSpans.length - 1];
+          const startIdx = allSpans.indexOf(startSpan);
+          const endIdx = allSpans.indexOf(endSpan);
+          if (startIdx < 0 || endIdx < 0) return;
+
+          const localOffsetFromSpanStart = (span: HTMLElement, boundary: { node: Node; offset: number }) => {
+            if (!span.contains(boundary.node)) return 0;
+            try {
+              const rLocal = document.createRange();
+              rLocal.selectNodeContents(span);
+              rLocal.setEnd(boundary.node, boundary.offset);
+              return rLocal.toString().length;
+            } catch {
+              return 0;
+            }
+          };
+
+          const localOffsetToSpanEnd = (span: HTMLElement, boundary: { node: Node; offset: number }) => {
+            if (!span.contains(boundary.node)) return span.textContent?.length || 0;
+            try {
+              const rLocal = document.createRange();
+              rLocal.selectNodeContents(span);
+              rLocal.setEnd(boundary.node, boundary.offset);
+              return rLocal.toString().length;
+            } catch {
+              return span.textContent?.length || 0;
+            }
+          };
+
+          // start boundary는 원래 Range의 start를 그대로 사용(교차 span 기반으로 startSpan은 안전)
+          const startB = { node: range.startContainer, offset: range.startOffset };
+          const endB = { node: range.endContainer, offset: range.endOffset };
+
+          const localStart = localOffsetFromSpanStart(startSpan, startB);
+          const localEnd = localOffsetToSpanEnd(endSpan, endB);
+
+          startOffset = offsetBefore(startIdx) + localStart;
+          endOffset = offsetBefore(endIdx) + localEnd;
+        } else {
+          const blockContent =
+            startBlockInfo.element.querySelector<HTMLElement>(
+              ".document-viewer__block-content"
+            ) || startBlockInfo.element;
+          blockText = blockContent.textContent || "";
+
+          const rangeForStart = document.createRange();
+          rangeForStart.selectNodeContents(blockContent);
+          rangeForStart.setEnd(range.startContainer, range.startOffset);
+          startOffset = rangeForStart.toString().length;
+
+          const rangeForEnd = document.createRange();
+          rangeForEnd.selectNodeContents(blockContent);
+          rangeForEnd.setEnd(range.endContainer, range.endOffset);
+          endOffset = rangeForEnd.toString().length;
+        }
+
+        startOffset = Math.max(0, Math.min(startOffset, blockText.length));
+        endOffset = Math.max(startOffset, Math.min(endOffset, blockText.length));
+        if (endOffset <= startOffset) return;
+
+        const text = blockText.slice(startOffset, endOffset);
+        const newRange = { blockId, startOffset, endOffset };
+        setSelectedRange(newRange);
+        setSelectedText(text);
+        lastValidRangeRef.current = newRange;
+        lastValidTextRef.current = text;
+
+        // mouseup 직후에는 브라우저 기본 selection 조각(파란 하이라이트)이 남아
+        // 우리가 그린 "병합된 파란 오버레이"와 겹쳐 보일 수 있습니다.
+        // 여기서는 native selection을 제거하고, 커스텀 오버레이만 남깁니다.
+        // (드래그 중에는 native selection이 보이고, mouseup 후에는 오버레이로 고정)
+        requestAnimationFrame(() => {
+          try {
+            selection.removeAllRanges();
+          } catch {
+            // ignore
+          }
+        });
+      } catch (error) {
+        console.warn("선택 영역 계산 실패(안정 버전):", error);
+      }
+    };
+
+    document.addEventListener("mouseup", handleMouseUpStable, true);
+    return () => {
+      document.removeEventListener("mouseup", handleMouseUpStable, true);
+    };
+  }, [rootElement, documentModel]);
+
+  // 텍스트 선택 처리 (legacy - disabled)
+  React.useEffect(() => {
+    if (!rootElement || !documentModel) return;
+    // NOTE: selectionchange 기반 로직은 드래그 중 setState/DOM 업데이트로 깜빡임과 오프셋 불일치를 유발하여 비활성화합니다.
+    return;
+
+    let isSelecting = false;
+    let updateTimeout: NodeJS.Timeout | null = null;
+    let lastValidRange: { blockId: string; startOffset: number; endOffset: number } | null = null;
+
+    const updateSelection = () => {
+      const selection = window.getSelection();
+      
+      // 선택이 없거나 collapsed인 경우
+      if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+        // 드래그 중이 아니고, 마지막 유효한 선택이 있으면 유지
+        if (!isSelecting && lastValidRange) {
+          setSelectedRange(lastValidRange);
+          return;
+        }
+        // 드래그 중이면 선택 초기화
+        if (isSelecting) {
+          setSelectedRange(null);
+          setSelectedText("");
+        }
+        return;
+      }
+
+      const range = selection.getRangeAt(0);
+      if (!rootElement || !rootElement.contains(range.commonAncestorContainer)) {
         setSelectedRange(null);
         setSelectedText("");
         return;
@@ -791,50 +834,114 @@ export const DocumentViewerWithUpload: React.FC<
               `span[data-pdf-block-id="${blockId}"]`
             )
           );
-          const selectedText = selection.toString();
 
-          // 선택된 텍스트로부터 오프셋 계산
-          let currentOffset = 0;
-          let foundStart = false;
-          let foundEnd = false;
+          // 모든 span의 텍스트를 순서대로 합쳐서 전체 텍스트 생성
+          blockText = allSpans.map(span => span.textContent || "").join("");
 
+          // 정확한 오프셋 계산: 실제로 선택된 span들만 찾아서 계산
+          // range가 실제로 어떤 span들을 선택했는지 확인
+          const selectedSpans: HTMLElement[] = [];
+          
+          // range가 교차하는 모든 span 찾기
           for (const span of allSpans) {
-            const spanText = span.textContent || "";
-            const spanStart = currentOffset;
-            const spanEnd = currentOffset + spanText.length;
-
-            // 선택 범위와 겹치는지 확인
-            if (!foundStart && range.intersectsNode(span)) {
-              // 선택 시작 위치 계산
-              const tempRange = document.createRange();
-              tempRange.setStart(textLayer, 0);
-              tempRange.setEnd(range.startContainer, range.startOffset);
-              const beforeText = tempRange.toString();
-              startOffset = beforeText.length;
-              foundStart = true;
+            // range가 span과 교차하는지 확인
+            try {
+              const spanRange = document.createRange();
+              spanRange.selectNodeContents(span);
+              
+              // range와 spanRange가 겹치는지 확인
+              if (range.compareBoundaryPoints(Range.START_TO_START, spanRange) <= 0 &&
+                  range.compareBoundaryPoints(Range.END_TO_END, spanRange) >= 0) {
+                // range가 span을 완전히 포함
+                selectedSpans.push(span);
+              } else if (range.compareBoundaryPoints(Range.START_TO_END, spanRange) < 0 &&
+                         range.compareBoundaryPoints(Range.END_TO_START, spanRange) > 0) {
+                // range와 span이 겹침
+                selectedSpans.push(span);
+              }
+            } catch (e) {
+              // span이 선택 범위와 겹치는지 간단히 확인
+              if (range.intersectsNode(span)) {
+                selectedSpans.push(span);
+              }
             }
-
-            if (range.intersectsNode(span)) {
-              // 선택 종료 위치 계산
-              const tempRange = document.createRange();
-              tempRange.setStart(textLayer, 0);
-              tempRange.setEnd(range.endContainer, range.endOffset);
-              const beforeText = tempRange.toString();
-              endOffset = beforeText.length;
-              foundEnd = true;
-            }
-
-            blockText += spanText;
-            currentOffset = spanEnd;
-
-            if (foundStart && foundEnd) break;
           }
 
-          if (!foundStart || !foundEnd || startOffset === endOffset) {
+          if (selectedSpans.length === 0) {
             setSelectedRange(null);
             setSelectedText("");
             return;
           }
+
+          // 선택된 첫 번째 span과 마지막 span 찾기
+          const firstSelectedSpan = selectedSpans[0];
+          const lastSelectedSpan = selectedSpans[selectedSpans.length - 1];
+          
+          const firstSpanIndex = allSpans.indexOf(firstSelectedSpan);
+          const lastSpanIndex = allSpans.indexOf(lastSelectedSpan);
+
+          if (firstSpanIndex === -1 || lastSpanIndex === -1) {
+            setSelectedRange(null);
+            setSelectedText("");
+            return;
+          }
+
+          // startOffset 계산: 첫 번째 선택된 span 이전까지의 텍스트 길이
+          let offset = 0;
+          for (let i = 0; i < firstSpanIndex; i++) {
+            offset += allSpans[i].textContent?.length || 0;
+          }
+          
+          // 첫 번째 span 내부의 오프셋 계산
+          if (range.startContainer.nodeType === Node.TEXT_NODE && firstSelectedSpan.contains(range.startContainer)) {
+            // span 내부의 텍스트 노드들 중에서 startContainer까지의 오프셋
+            const textNodes = Array.from(firstSelectedSpan.childNodes).filter(n => n.nodeType === Node.TEXT_NODE);
+            let textOffset = 0;
+            for (const textNode of textNodes) {
+              if (textNode === range.startContainer) {
+                textOffset += range.startOffset;
+                break;
+              }
+              textOffset += textNode.textContent?.length || 0;
+            }
+            startOffset = offset + textOffset;
+          } else {
+            // range의 시작이 span의 시작인 경우
+            startOffset = offset;
+          }
+
+          // endOffset 계산: 마지막 선택된 span까지의 텍스트 길이
+          offset = 0;
+          for (let i = 0; i < lastSpanIndex; i++) {
+            offset += allSpans[i].textContent?.length || 0;
+          }
+          
+          // 마지막 span 내부의 오프셋 계산
+          if (range.endContainer.nodeType === Node.TEXT_NODE && lastSelectedSpan.contains(range.endContainer)) {
+            const textNodes = Array.from(lastSelectedSpan.childNodes).filter(n => n.nodeType === Node.TEXT_NODE);
+            let textOffset = 0;
+            for (const textNode of textNodes) {
+              if (textNode === range.endContainer) {
+                textOffset += range.endOffset;
+                break;
+              }
+              textOffset += textNode.textContent?.length || 0;
+            }
+            endOffset = offset + textOffset;
+          } else {
+            // range의 끝이 span의 끝인 경우
+            endOffset = offset + (lastSelectedSpan.textContent?.length || 0);
+          }
+
+          // 오프셋 검증 및 조정
+          if (startOffset === endOffset) {
+            setSelectedRange(null);
+            setSelectedText("");
+            return;
+          }
+
+          startOffset = Math.max(0, Math.min(startOffset, blockText.length));
+          endOffset = Math.max(startOffset, Math.min(endOffset, blockText.length));
         } else {
           // 일반 블록: 기존 로직
           const blockContent =
@@ -862,15 +969,18 @@ export const DocumentViewerWithUpload: React.FC<
         }
 
         const text = blockText.slice(startOffset, endOffset);
-        setSelectedRange({
+        const newRange = {
           blockId,
           startOffset: Math.max(0, Math.min(startOffset, blockText.length)),
           endOffset: Math.max(
             startOffset,
             Math.min(endOffset, blockText.length)
           ),
-        });
+        };
+        setSelectedRange(newRange);
         setSelectedText(text);
+        // 마지막 유효한 선택 저장 (브라우저 선택이 사라져도 유지하기 위해)
+        lastValidRange = newRange;
       } catch (error) {
         console.warn("선택 영역 계산 실패:", error);
         setSelectedRange(null);
@@ -878,9 +988,74 @@ export const DocumentViewerWithUpload: React.FC<
       }
     };
 
-    document.addEventListener("selectionchange", updateSelection);
+    // 마우스 다운/업 이벤트로 드래그 상태 추적
+    const handleMouseDown = (e: MouseEvent) => {
+      // PDF 텍스트 레이어 외부를 클릭하면 선택 초기화
+      const target = e.target as HTMLElement;
+      if (!target.closest(".react-pdf__Page__textContent")) {
+        // PDF 텍스트 레이어가 아니면 선택 초기화
+        setSelectedRange(null);
+        setSelectedText("");
+        lastValidRange = null;
+      }
+      isSelecting = true;
+    };
+
+    const handleMouseUp = () => {
+      isSelecting = false;
+      if (updateTimeout) {
+        clearTimeout(updateTimeout);
+        updateTimeout = null;
+      }
+      
+      // 마우스를 떼면 즉시 업데이트하여 선택 저장
+      updateSelection();
+      
+      // mouseup 후 약간의 지연을 두고 다시 확인
+      // (selectionchange가 발생하여 선택이 사라질 수 있음)
+      setTimeout(() => {
+        const selection = window.getSelection();
+        // selection이 사라졌지만 lastValidRange가 있으면 유지
+        if ((!selection || selection.rangeCount === 0 || selection.isCollapsed) && lastValidRange) {
+          setSelectedRange(lastValidRange);
+        }
+      }, 100);
+    };
+
+    // 드래그 중에도 선택 영역을 업데이트 (throttle 적용)
+    let lastUpdateTime = 0;
+    const throttledUpdateSelection = () => {
+      const now = Date.now();
+      if (now - lastUpdateTime < 16) { // ~60fps로 제한
+        if (updateTimeout) clearTimeout(updateTimeout);
+        updateTimeout = setTimeout(() => {
+          lastUpdateTime = Date.now();
+          updateSelection();
+        }, 16);
+        return;
+      }
+      lastUpdateTime = now;
+      updateSelection();
+    };
+
+    // selectionchange 이벤트: 드래그 중에는 throttled, 아닐 때는 즉시
+    const handleSelectionChange = () => {
+      if (isSelecting) {
+        throttledUpdateSelection();
+      } else {
+        updateSelection();
+      }
+    };
+
+    document.addEventListener("selectionchange", handleSelectionChange);
+    document.addEventListener("mousedown", handleMouseDown);
+    document.addEventListener("mouseup", handleMouseUp);
+
     return () => {
       document.removeEventListener("selectionchange", updateSelection);
+      document.removeEventListener("mousedown", handleMouseDown);
+      document.removeEventListener("mouseup", handleMouseUp);
+      if (updateTimeout) clearTimeout(updateTimeout);
     };
   }, [rootElement, documentModel]);
 
@@ -896,6 +1071,11 @@ export const DocumentViewerWithUpload: React.FC<
     selection?.removeAllRanges();
   }, []);
 
+  const makeExcerpt = React.useCallback((text: string) => {
+    const trimmed = (text ?? "").replace(/\s+/g, " ").trim();
+    return trimmed.length > 120 ? `${trimmed.slice(0, 120)}...` : trimmed;
+  }, []);
+
   const handleApplySelection = React.useCallback(() => {
     if (!selectedRange) return;
 
@@ -909,6 +1089,7 @@ export const DocumentViewerWithUpload: React.FC<
       annotationService.createHighlight(range, {
         style: { color: "rgba(250, 204, 21, 0.6)", label: "사용자 지정" },
         author: { id: user.id, name: user.name },
+        meta: { excerpt: makeExcerpt(selectedText) },
       });
     } else if (activeTool === "underline") {
       annotationService.createUnderline(range, {
@@ -919,12 +1100,14 @@ export const DocumentViewerWithUpload: React.FC<
           label: "사용자 지정",
         },
         author: { id: user.id, name: user.name },
+        meta: { excerpt: makeExcerpt(selectedText) },
       });
     } else {
       // note
       const annotation = annotationService.createHighlight(range, {
         style: { color: "rgba(14, 165, 233, 0.25)", label: "메모" },
         author: { id: user.id, name: user.name },
+        meta: { excerpt: makeExcerpt(selectedText) },
       });
       const content = window
         .prompt("메모 내용을 입력하세요", selectedText)
@@ -1122,6 +1305,7 @@ export const DocumentViewerWithUpload: React.FC<
         <DocumentViewer
           document={documentModel}
           annotationService={annotationService}
+          scrollToAnnotation={scrollToAnnotation}
           actions={actions}
           pagination={
             documentModel.pageBreaks && documentModel.pageBreaks.length > 0
@@ -1164,6 +1348,7 @@ export const DocumentViewerWithUpload: React.FC<
                         pageNum={pageNum}
                         pdfDocPromise={pdfDocPromise}
                         annotations={ann}
+                        selectedRange={selectedRange}
                       />
                     </div>
                   );

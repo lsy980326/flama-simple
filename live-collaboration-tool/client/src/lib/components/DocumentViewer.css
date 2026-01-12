@@ -276,7 +276,7 @@
   padding: 0;
   user-select: text;
   -webkit-user-select: text;
-  z-index: 100; /* 캔버스(1)보다 훨씬 위에 */
+  z-index: 100; /* 텍스트 선택 레이어 */
   pointer-events: auto;
   cursor: text;
   /* transform이 위치를 어긋나게 할 수 있으므로 명시적으로 설정 */
@@ -294,7 +294,7 @@
   line-height: 1;
   letter-spacing: 0;
   pointer-events: auto;
-  z-index: 100; /* 어노테이션보다 높게 설정하여 선택 우선권 확보 */
+  z-index: 100; /* 텍스트 선택 레이어 */
   cursor: text;
   user-select: text;
   -webkit-user-select: text;
@@ -327,12 +327,15 @@
 }
 
 /* 드래그 선택이 "안 되는 것처럼 보이는" 문제 방지: 선택 영역 배경을 명시 */
-.pdf-page .textLayer ::selection {
-  background: rgba(0, 0, 255, 0.25);
+/* 드래그 중에는 브라우저 기본 선택 배경도 보이도록, 마우스를 떼면 커스텀 오버레이만 */
+.pdf-page .textLayer ::selection,
+.pdf-page .react-pdf__Page__textContent ::selection {
+  background: rgba(59, 130, 246, 0.3); /* 드래그 중에도 보이도록 */
 }
 
-.pdf-page .textLayer ::-moz-selection {
-  background: rgba(0, 0, 255, 0.25);
+.pdf-page .textLayer ::-moz-selection,
+.pdf-page .react-pdf__Page__textContent ::-moz-selection {
+  background: rgba(59, 130, 246, 0.3); /* 드래그 중에도 보이도록 */
 }
 
 /* pdf.js TextLayerBuilder가 selection 범위를 관리할 때 사용하는 상태 */
