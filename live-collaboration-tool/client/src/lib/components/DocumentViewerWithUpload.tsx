@@ -1349,6 +1349,7 @@ export const DocumentViewerWithUpload: React.FC<
                         pdfDocPromise={pdfDocPromise}
                         annotations={ann}
                         selectedRange={selectedRange}
+                        annotationService={annotationService}
                       />
                     </div>
                   );

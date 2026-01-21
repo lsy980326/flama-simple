@@ -1,5 +1,6 @@
 import React from "react";
 import type { AnnotationEntry } from "../annotations/types";
+import type { AnnotationService } from "../annotations/AnnotationService";
 
 export type PdfSelectedRange =
   | { blockId: string; startOffset: number; endOffset: number }
@@ -12,6 +13,7 @@ export interface PdfPageBlockProps {
   pdfDocPromise: Promise<any>;
   annotations: AnnotationEntry[];
   selectedRange?: PdfSelectedRange;
+  annotationService?: AnnotationService;
 }
 
 type OverlayRect = { left: number; top: number; width: number; height: number };
@@ -145,7 +147,7 @@ function mergeRectsIntoLines(
  * - 따라서 별도 파일로 분리해 컴포넌트 아이덴티티를 안정화합니다.
  */
 export const PdfPageBlock: React.FC<PdfPageBlockProps> = React.memo(
-  ({ blockId, pageNum, pdfDocPromise, annotations, selectedRange }) => {
+  ({ blockId, pageNum, pdfDocPromise, annotations, selectedRange, annotationService }) => {
     const hostRef = React.useRef<HTMLDivElement | null>(null);
     const pageRef = React.useRef<HTMLDivElement | null>(null);
 
@@ -266,7 +268,36 @@ export const PdfPageBlock: React.FC<PdfPageBlockProps> = React.memo(
     const [overlayNodes, setOverlayNodes] = React.useState<React.ReactNode[]>(
       []
     );
+    const [hoveredAnnotationId, setHoveredAnnotationId] = React.useState<string | null>(null);
+    const [isDragging, setIsDragging] = React.useState(false);
     const overlayContainerRef = React.useRef<HTMLDivElement | null>(null);
+    
+    // 드래그 감지
+    React.useEffect(() => {
+      const handleMouseDown = () => {
+        setIsDragging(false);
+      };
+      
+      const handleMouseMove = () => {
+        if (document.activeElement && (document.activeElement as HTMLElement).closest('.pdf-page')) {
+          setIsDragging(true);
+        }
+      };
+      
+      const handleMouseUp = () => {
+        setTimeout(() => setIsDragging(false), 100);
+      };
+      
+      document.addEventListener('mousedown', handleMouseDown);
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+      
+      return () => {
+        document.removeEventListener('mousedown', handleMouseDown);
+        document.removeEventListener('mousemove', handleMouseMove);
+        document.removeEventListener('mouseup', handleMouseUp);
+      };
+    }, []);
 
     React.useEffect(() => {
       const pageEl = pageRef.current;
@@ -390,10 +421,12 @@ export const PdfPageBlock: React.FC<PdfPageBlockProps> = React.memo(
           const mergedRects = mergeRectsIntoLines(rects, { yTolerance: 3, xGap: 2 });
 
           mergedRects.forEach((r, idx) => {
+            const isHovered = hoveredAnnotationId === a.id;
             if (a.type === "highlight") {
               nodes.push(
                 <div
                   key={`${a.id}-hl-${idx}`}
+                  data-annotation-id={a.id}
                   style={{
                     position: "absolute",
                     left: `${r.left}px`,
@@ -402,13 +435,79 @@ export const PdfPageBlock: React.FC<PdfPageBlockProps> = React.memo(
                     height: `${r.height}px`,
                     background: a.style?.color ?? "rgba(250, 204, 21, 0.6)",
                     pointerEvents: "none",
+                    opacity: isHovered ? 0.8 : 1,
+                    transition: "opacity 0.2s ease",
                   }}
                 />
               );
+              // 삭제 버튼을 위한 투명한 영역 (호버 감지용) - 드래그 중이 아닐 때만 활성화
+              if (annotationService && !isDragging) {
+                nodes.push(
+                  <div
+                    key={`${a.id}-hl-interactive-${idx}`}
+                    data-annotation-id={a.id}
+                    style={{
+                      position: "absolute",
+                      left: `${r.left}px`,
+                      top: `${r.top}px`,
+                      width: `${r.width}px`,
+                      height: `${r.height}px`,
+                      pointerEvents: "auto",
+                      cursor: "pointer",
+                      zIndex: 250,
+                    }}
+                    onMouseEnter={() => {
+                      setHoveredAnnotationId(a.id);
+                    }}
+                    onMouseLeave={() => {
+                      setHoveredAnnotationId(null);
+                    }}
+                    onClick={(e) => {
+                      if (window.confirm("메모를 삭제하시겠습니까?")) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        annotationService.removeAnnotation(a.id);
+                      }
+                    }}
+                  />
+                );
+              }
+              // 삭제 버튼 표시
+              if (isHovered && annotationService) {
+                nodes.push(
+                  <button
+                    key={`${a.id}-delete-${idx}`}
+                    type="button"
+                    className="document-viewer__annotation-delete"
+                    style={{
+                      position: "absolute",
+                      left: `${r.left + r.width - 8}px`,
+                      top: `${r.top - 8}px`,
+                      zIndex: 300,
+                      pointerEvents: "auto",
+                    }}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (window.confirm("메모를 삭제하시겠습니까?")) {
+                        annotationService.removeAnnotation(a.id);
+                      }
+                    }}
+                    title="어노테이션 삭제"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }}
+                  >
+                    ×
+                  </button>
+                );
+              }
             } else if (a.type === "underline") {
               nodes.push(
                 <div
                   key={`${a.id}-ul-${idx}`}
+                  data-annotation-id={a.id}
                   style={{
                     position: "absolute",
                     left: `${r.left}px`,
@@ -417,9 +516,74 @@ export const PdfPageBlock: React.FC<PdfPageBlockProps> = React.memo(
                     height: `2px`,
                     background: a.style?.underlineColor ?? "#2563eb",
                     pointerEvents: "none",
+                    opacity: isHovered ? 0.8 : 1,
+                    transition: "opacity 0.2s ease",
                   }}
                 />
               );
+              // 삭제 버튼을 위한 투명한 영역 (호버 감지용) - 밑줄 영역 위에, 드래그 중이 아닐 때만 활성화
+              if (annotationService && !isDragging) {
+                nodes.push(
+                  <div
+                    key={`${a.id}-ul-interactive-${idx}`}
+                    data-annotation-id={a.id}
+                    style={{
+                      position: "absolute",
+                      left: `${r.left}px`,
+                      top: `${r.top}px`,
+                      width: `${r.width}px`,
+                      height: `${r.height}px`,
+                      pointerEvents: "auto",
+                      cursor: "pointer",
+                      zIndex: 250,
+                    }}
+                    onMouseEnter={() => {
+                      setHoveredAnnotationId(a.id);
+                    }}
+                    onMouseLeave={() => {
+                      setHoveredAnnotationId(null);
+                    }}
+                    onClick={(e) => {
+                      if (window.confirm("메모를 삭제하시겠습니까?")) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        annotationService.removeAnnotation(a.id);
+                      }
+                    }}
+                  />
+                );
+              }
+              // 삭제 버튼 표시
+              if (isHovered && annotationService) {
+                nodes.push(
+                  <button
+                    key={`${a.id}-delete-${idx}`}
+                    type="button"
+                    className="document-viewer__annotation-delete"
+                    style={{
+                      position: "absolute",
+                      left: `${r.left + r.width - 8}px`,
+                      top: `${r.top + r.height - 8}px`,
+                      zIndex: 300,
+                      pointerEvents: "auto",
+                    }}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (window.confirm("메모를 삭제하시겠습니까?")) {
+                        annotationService.removeAnnotation(a.id);
+                      }
+                    }}
+                    title="어노테이션 삭제"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }}
+                  >
+                    ×
+                  </button>
+                );
+              }
             }
           });
         });
@@ -481,7 +645,7 @@ export const PdfPageBlock: React.FC<PdfPageBlockProps> = React.memo(
         mutationObserver?.disconnect();
         mutationObserver = null;
       };
-    }, [annotations, blockId, selectedRange]);
+    }, [annotations, blockId, selectedRange, hoveredAnnotationId, annotationService, isDragging]);
 
     return (
       <div style={{ position: "relative" }}>

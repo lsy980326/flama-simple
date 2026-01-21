@@ -653,6 +653,84 @@ function applyAnnotationStyle(annotation: AnnotationEntry): React.CSSProperties 
   return base;
 }
 
+interface AnnotationSpanProps {
+  annotation: AnnotationEntry;
+  text: string;
+  annotationService: AnnotationService;
+  onAnnotationClick?: (annotationId: string) => void;
+  getAnnotationClassName: (annotation: AnnotationEntry) => string;
+}
+
+const AnnotationSpan: React.FC<AnnotationSpanProps> = ({
+  annotation,
+  text,
+  annotationService,
+  onAnnotationClick,
+  getAnnotationClassName,
+}) => {
+  const [showDeleteButton, setShowDeleteButton] = React.useState(false);
+
+  return (
+    <span
+      data-annotation-id={annotation.id}
+      className={cx(getAnnotationClassName(annotation), "document-viewer__annotation-wrapper")}
+      style={{
+        ...applyAnnotationStyle(annotation),
+        cursor: "pointer",
+        position: "relative",
+        display: "inline",
+      }}
+      title={annotation.style?.label}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        // 클릭 시 삭제 버튼 토글
+        setShowDeleteButton((prev) => !prev);
+        if (onAnnotationClick) {
+          onAnnotationClick(annotation.id);
+        }
+      }}
+      onMouseEnter={(event) => {
+        if (onAnnotationClick) {
+          (event.currentTarget as HTMLElement).style.opacity = "0.8";
+        }
+      }}
+      onMouseLeave={(event) => {
+        if (onAnnotationClick) {
+          const originalOpacity =
+            annotation.style?.opacity ?? 1;
+          (event.currentTarget as HTMLElement).style.opacity =
+            String(originalOpacity);
+        }
+      }}
+    >
+      {text}
+      {showDeleteButton && (
+        <button
+          type="button"
+          className="document-viewer__annotation-delete"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setShowDeleteButton(false);
+            if (window.confirm("메모를 삭제하시겠습니까?")) {
+              annotationService.removeAnnotation(annotation.id);
+            }
+          }}
+          title="메모 삭제"
+          onMouseDown={(e) => {
+            // 버튼 클릭 시 이벤트 전파 방지로 선택 영역 생성 방지
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+        >
+          ×
+        </button>
+      )}
+    </span>
+  );
+};
+
 export const DocumentViewer: React.FC<DocumentViewerProps> = ({
   document,
   annotationService,
@@ -1576,24 +1654,45 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
               className="document-viewer__note-card"
             >
               <header className="document-viewer__note-header">
-                <div 
-                  className="document-viewer__note-title"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    e.preventDefault();
-                    handleHeaderClick();
-                  }}
-                  style={{ cursor: "pointer" }}
-                  title="클릭하여 해당 위치로 이동"
-                >
-                  {displayText}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
+                  <div 
+                    className="document-viewer__note-title"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      handleHeaderClick();
+                    }}
+                    style={{ cursor: "pointer", flex: 1, minWidth: 0 }}
+                    title="클릭하여 해당 위치로 이동"
+                  >
+                    {displayText}
+                  </div>
+                  <button
+                    type="button"
+                    className="document-viewer__note-delete"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      if (window.confirm("메모를 삭제하시겠습니까?")) {
+                        annotationService.removeAnnotation(annotation.id);
+                      }
+                    }}
+                    title="메모 삭제"
+                  >
+                    삭제
+                  </button>
                 </div>
                 <div className="document-viewer__note-location">
-                  {typeof location.line === 'number' && location.line > 0 ? (
-                    <span className="document-viewer__note-location-text">
-                      {pagination?.enabled && typeof location.page === 'number' && location.page >= 0 ? `페이지 ${location.page + 1} ` : ""}{location.line}줄
-                    </span>
-                  ) : null}
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    {typeof location.line === 'number' && location.line > 0 ? (
+                      <span className="document-viewer__note-location-text">
+                        {pagination?.enabled && typeof location.page === 'number' && location.page >= 0 ? `페이지 ${location.page + 1} ` : ""}{location.line}줄
+                      </span>
+                    ) : null}
+                  </div>
+                  {annotation.author?.name && (
+                    <span>{annotation.author.name}</span>
+                  )}
                 </div>
               </header>
               <ul className="document-viewer__notes-list">
@@ -1644,12 +1743,14 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
     notePlaceholder,
     addNote,
     setNoteDraft,
-    handleScrollToAnnotation,
-    getAnnotationLocation,
-    pagination?.enabled,
-    noteSearchQuery,
-    highlightNote,
-  ]);
+      handleScrollToAnnotation,
+      getAnnotationLocation,
+      pagination?.enabled,
+      noteSearchQuery,
+      highlightNote,
+      annotationService,
+      removeNote,
+    ]);
 
   const headerNode = renderHeader ? renderHeader(context) : defaultHeader;
   const toolbarNode = renderToolbar ? renderToolbar(context) : defaultToolbar;
@@ -1767,38 +1868,14 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
                           if (segment.annotations.length) {
                             const annotation = segment.annotations[0];
                             return (
-                              <span
+                              <AnnotationSpan
                                 key={`${block.id}-${annotation.id}-${index}`}
-                                data-annotation-id={annotation.id}
-                                className={getAnnotationClassName(annotation)}
-                                style={{
-                                  ...applyAnnotationStyle(annotation),
-                                  cursor: onAnnotationClick ? "pointer" : "default",
-                                }}
-                                title={annotation.style?.label}
-                                onClick={(event) => {
-                                  if (onAnnotationClick) {
-                                    event.preventDefault();
-                                    event.stopPropagation();
-                                    onAnnotationClick(annotation.id);
-                                  }
-                                }}
-                                onMouseEnter={(event) => {
-                                  if (onAnnotationClick) {
-                                    (event.currentTarget as HTMLElement).style.opacity = "0.8";
-                                  }
-                                }}
-                                onMouseLeave={(event) => {
-                                  if (onAnnotationClick) {
-                                    const originalOpacity =
-                                      annotation.style?.opacity ?? 1;
-                                    (event.currentTarget as HTMLElement).style.opacity =
-                                      String(originalOpacity);
-                                  }
-                                }}
-                              >
-                                {segment.text}
-                              </span>
+                                annotation={annotation}
+                                text={segment.text}
+                                annotationService={annotationService}
+                                onAnnotationClick={onAnnotationClick}
+                                getAnnotationClassName={getAnnotationClassName}
+                              />
                             );
                           }
 
