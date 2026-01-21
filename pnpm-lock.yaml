@@ -92,6 +92,9 @@ importers:
       '@types/react-pdf':
         specifier: ^6.2.0
         version: 6.2.0
+      css-loader:
+        specifier: ^6.11.0
+        version: 6.11.0(webpack@5.102.1)
       null-loader:
         specifier: ^4.0.1
         version: 4.0.1(webpack@5.102.1)
@@ -116,6 +119,9 @@ importers:
       rollup-plugin-postcss:
         specifier: ^4.0.2
         version: 4.0.2(postcss@8.5.6)(ts-node@10.9.2(@types/node@16.18.126)(typescript@4.9.5))
+      style-loader:
+        specifier: ^4.0.0
+        version: 4.0.0(webpack@5.102.1)
       typescript:
         specifier: ^4.9.5
         version: 4.9.5
@@ -6242,6 +6248,12 @@ packages:
     engines: {node: '>= 12.13.0'}
     peerDependencies:
       webpack: ^5.0.0
+
+  style-loader@4.0.0:
+    resolution: {integrity: sha512-1V4WqhhZZgjVAVJyt7TdDPZoPBPNHbekX4fWnCJL1yQukhCeZhJySUL+gL9y6sNdN95uEOS83Y55SqHcP7MzLA==}
+    engines: {node: '>= 18.12.0'}
+    peerDependencies:
+      webpack: ^5.27.0
 
   stylehacks@5.1.1:
     resolution: {integrity: sha512-sBpcd5Hx7G6seo7b1LkpttvTz7ikD0LlH5RmdcBNb6fFR0Fl7LQwHDFr300q4cwUqi+IYrFGmsIHieMBfnN/Bw==}
@@ -14001,6 +14013,10 @@ snapshots:
   style-inject@0.3.0: {}
 
   style-loader@3.3.4(webpack@5.102.1):
+    dependencies:
+      webpack: 5.102.1
+
+  style-loader@4.0.0(webpack@5.102.1):
     dependencies:
       webpack: 5.102.1
 
