@@ -122,6 +122,11 @@ export const DocumentViewerWithUpload: React.FC<
     endOffset: number;
   } | null>(null);
   const lastValidTextRef = React.useRef<string>("");
+  // 컨텍스트 메뉴 상태
+  const [contextMenuPosition, setContextMenuPosition] = React.useState<{
+    x: number;
+    y: number;
+  } | null>(null);
   const [renderHandle, setRenderHandle] = React.useState<RenderHandle | null>(
     null
   );
@@ -704,6 +709,56 @@ export const DocumentViewerWithUpload: React.FC<
         lastValidRangeRef.current = newRange;
         lastValidTextRef.current = text;
 
+        // 컨텍스트 메뉴 위치 계산
+        try {
+          const rangeRect = range.getBoundingClientRect();
+          // 선택 영역 위쪽에 메뉴 표시 (공간이 부족하면 아래쪽)
+          const menuHeight = 40; // 예상 메뉴 높이
+          const menuWidth = 200; // 예상 메뉴 너비
+          const spaceAbove = rangeRect.top;
+          const spaceBelow = window.innerHeight - rangeRect.bottom;
+          
+          let menuY: number;
+          if (spaceAbove >= menuHeight + 10) {
+            // 위쪽에 표시
+            menuY = rangeRect.top - menuHeight - 8;
+          } else if (spaceBelow >= menuHeight + 10) {
+            // 아래쪽에 표시
+            menuY = rangeRect.bottom + 8;
+          } else {
+            // 중앙에 표시
+            menuY = rangeRect.top + (rangeRect.height / 2) - (menuHeight / 2);
+          }
+          
+          // 선택 영역의 중앙에 가로 위치
+          let menuX = rangeRect.left + (rangeRect.width / 2);
+          
+          // 화면 경계 체크
+          const padding = 10;
+          if (menuX - menuWidth / 2 < padding) {
+            menuX = padding + menuWidth / 2;
+          } else if (menuX + menuWidth / 2 > window.innerWidth - padding) {
+            menuX = window.innerWidth - padding - menuWidth / 2;
+          }
+          
+          // Y 위치도 화면 경계 체크
+          if (menuY < padding) {
+            menuY = padding;
+          } else if (menuY + menuHeight > window.innerHeight - padding) {
+            menuY = window.innerHeight - padding - menuHeight;
+          }
+          
+          setContextMenuPosition({ x: menuX, y: menuY });
+        } catch (error) {
+          console.warn("컨텍스트 메뉴 위치 계산 실패:", error);
+          // 기본 위치로 설정
+          const rangeRect = range.getBoundingClientRect();
+          setContextMenuPosition({ 
+            x: Math.max(10, Math.min(rangeRect.left + (rangeRect.width / 2), window.innerWidth - 210)), 
+            y: Math.max(10, rangeRect.top - 48) 
+          });
+        }
+
         // mouseup 직후에는 브라우저 기본 selection 조각(파란 하이라이트)이 남아
         // 우리가 그린 "병합된 파란 오버레이"와 겹쳐 보일 수 있습니다.
         // 여기서는 native selection을 제거하고, 커스텀 오버레이만 남깁니다.
@@ -1062,11 +1117,133 @@ export const DocumentViewerWithUpload: React.FC<
   React.useEffect(() => {
     setSelectedRange(null);
     setSelectedText("");
+    setContextMenuPosition(null);
   }, [documentModel]);
+
+  // 컨텍스트 메뉴 외부 클릭 시 닫기 및 스크롤 시 위치 업데이트
+  React.useEffect(() => {
+    if (!contextMenuPosition || !selectedRange) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      // 컨텍스트 메뉴나 선택 영역이 아닌 곳을 클릭한 경우
+      if (!target.closest(".text-selection-context-menu") && 
+          !target.closest(".pdf-page") &&
+          !target.closest(".document-viewer__block")) {
+        setContextMenuPosition(null);
+        // 선택도 함께 초기화하지 않음 (사용자가 다시 클릭할 수 있도록)
+      }
+    };
+
+    const updateMenuPosition = () => {
+      if (!rootElement || !selectedRange) return;
+      
+      // 선택 영역의 현재 위치를 다시 계산
+      const blockEl = rootElement.querySelector<HTMLElement>(
+        `[data-block-id="${selectedRange.blockId}"], [data-pdf-page-block-id="${selectedRange.blockId}"]`
+      );
+      if (!blockEl) return;
+
+      try {
+        // PDF 텍스트 레이어에서 선택 영역의 실제 위치 찾기
+        const textLayer = blockEl.querySelector<HTMLElement>(
+          ".textLayer, .react-pdf__Page__textContent"
+        );
+        if (textLayer) {
+          const allSpans = Array.from(
+            textLayer.querySelectorAll<HTMLElement>(
+              `span[data-pdf-block-id="${selectedRange.blockId}"]`
+            )
+          );
+          if (allSpans.length > 0) {
+            let runOffset = 0;
+            let foundStart = false;
+            let startSpan: HTMLElement | null = null;
+            let endSpan: HTMLElement | null = null;
+
+            for (const span of allSpans) {
+              const spanText = span.textContent || "";
+              const spanStart = runOffset;
+              const spanEnd = runOffset + spanText.length;
+              runOffset = spanEnd;
+
+              if (!foundStart && spanEnd > selectedRange.startOffset) {
+                startSpan = span;
+                foundStart = true;
+              }
+              if (spanEnd >= selectedRange.endOffset) {
+                endSpan = span;
+                break;
+              }
+            }
+
+            if (startSpan && endSpan) {
+              const startRect = startSpan.getBoundingClientRect();
+              const endRect = endSpan.getBoundingClientRect();
+              const rangeRect = new DOMRect(
+                Math.min(startRect.left, endRect.left),
+                Math.min(startRect.top, endRect.top),
+                Math.max(startRect.right, endRect.right) - Math.min(startRect.left, endRect.left),
+                Math.max(startRect.bottom, endRect.bottom) - Math.min(startRect.top, endRect.top)
+              );
+
+              const menuHeight = 40;
+              const menuWidth = 200;
+              const spaceAbove = rangeRect.top;
+              const spaceBelow = window.innerHeight - rangeRect.bottom;
+
+              let menuY: number;
+              if (spaceAbove >= menuHeight + 10) {
+                menuY = rangeRect.top - menuHeight - 8;
+              } else if (spaceBelow >= menuHeight + 10) {
+                menuY = rangeRect.bottom + 8;
+              } else {
+                menuY = rangeRect.top + (rangeRect.height / 2) - (menuHeight / 2);
+              }
+
+              let menuX = rangeRect.left + (rangeRect.width / 2);
+              const padding = 10;
+              if (menuX - menuWidth / 2 < padding) {
+                menuX = padding + menuWidth / 2;
+              } else if (menuX + menuWidth / 2 > window.innerWidth - padding) {
+                menuX = window.innerWidth - padding - menuWidth / 2;
+              }
+
+              if (menuY < padding) {
+                menuY = padding;
+              } else if (menuY + menuHeight > window.innerHeight - padding) {
+                menuY = window.innerHeight - padding - menuHeight;
+              }
+
+              setContextMenuPosition({ x: menuX, y: menuY });
+            }
+          }
+        }
+      } catch (error) {
+        // 위치 업데이트 실패 시 메뉴 닫기
+        setContextMenuPosition(null);
+      }
+    };
+
+    // 약간의 지연을 두어 mouseup 이벤트가 먼저 처리되도록
+    const timeoutId = setTimeout(() => {
+      document.addEventListener("click", handleClickOutside, true);
+      window.addEventListener("scroll", updateMenuPosition, true);
+      window.addEventListener("resize", updateMenuPosition);
+    }, 0);
+
+    return () => {
+      clearTimeout(timeoutId);
+      document.removeEventListener("click", handleClickOutside, true);
+      window.removeEventListener("scroll", updateMenuPosition, true);
+      window.removeEventListener("resize", updateMenuPosition);
+    };
+  }, [contextMenuPosition, selectedRange, rootElement]);
 
   const clearSelection = React.useCallback(() => {
     setSelectedRange(null);
     setSelectedText("");
+    setContextMenuPosition(null);
     const selection = window.getSelection();
     selection?.removeAllRanges();
   }, []);
@@ -1076,7 +1253,7 @@ export const DocumentViewerWithUpload: React.FC<
     return trimmed.length > 120 ? `${trimmed.slice(0, 120)}...` : trimmed;
   }, []);
 
-  const handleApplySelection = React.useCallback(() => {
+  const handleApplySelection = React.useCallback((tool?: "highlight" | "underline" | "note") => {
     if (!selectedRange) return;
 
     const range: DocumentRange = {
@@ -1085,13 +1262,15 @@ export const DocumentViewerWithUpload: React.FC<
       endOffset: selectedRange.endOffset,
     };
 
-    if (activeTool === "highlight") {
+    const toolToUse = tool || activeTool;
+
+    if (toolToUse === "highlight") {
       annotationService.createHighlight(range, {
         style: { color: "rgba(250, 204, 21, 0.6)", label: "사용자 지정" },
         author: { id: user.id, name: user.name },
         meta: { excerpt: makeExcerpt(selectedText) },
       });
-    } else if (activeTool === "underline") {
+    } else if (toolToUse === "underline") {
       annotationService.createUnderline(range, {
         style: {
           underlineColor: "#2563eb",
@@ -1130,6 +1309,7 @@ export const DocumentViewerWithUpload: React.FC<
     selectedText,
     clearSelection,
     user,
+    makeExcerpt,
   ]);
 
   // 키보드 단축키: Ctrl+1 (형광펜), Ctrl+2 (밑줄)
@@ -1365,6 +1545,109 @@ export const DocumentViewerWithUpload: React.FC<
         💡 텍스트를 드래그하여 선택한 후 Ctrl+1 (형광펜), Ctrl+2 (밑줄)로
         어노테이션을 추가하거나 툴바 버튼을 사용할 수 있습니다.
       </div>
+      {/* 텍스트 선택 컨텍스트 메뉴 */}
+      {contextMenuPosition && selectedRange && selectedText && (
+        <div
+          className="text-selection-context-menu"
+          style={{
+            position: "fixed",
+            left: `${contextMenuPosition.x}px`,
+            top: `${contextMenuPosition.y}px`,
+            background: "white",
+            borderRadius: "8px",
+            boxShadow: "0 4px 12px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.08)",
+            padding: "4px",
+            display: "flex",
+            gap: "4px",
+            zIndex: 10000,
+            pointerEvents: "auto",
+            transform: "translateX(-50%)", // 중앙 정렬
+            animation: "fadeInUp 0.15s ease-out",
+          }}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+        >
+          <button
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              handleApplySelection("highlight");
+            }}
+            style={{
+              padding: "6px 12px",
+              border: "none",
+              background: "transparent",
+              borderRadius: "6px",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+              fontSize: "14px",
+              color: "#374151",
+              transition: "background-color 0.15s ease",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = "#f3f4f6";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = "transparent";
+            }}
+            title="형광펜"
+          >
+            <span
+              style={{
+                width: "20px",
+                height: "20px",
+                borderRadius: "4px",
+                background: "rgba(250, 204, 21, 0.6)",
+                display: "inline-block",
+                border: "1px solid rgba(250, 204, 21, 0.8)",
+              }}
+            />
+            <span>형광펜</span>
+          </button>
+          <button
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              handleApplySelection("underline");
+            }}
+            style={{
+              padding: "6px 12px",
+              border: "none",
+              background: "transparent",
+              borderRadius: "6px",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+              fontSize: "14px",
+              color: "#374151",
+              transition: "background-color 0.15s ease",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = "#f3f4f6";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = "transparent";
+            }}
+            title="밑줄"
+          >
+            <span
+              style={{
+                width: "20px",
+                height: "3px",
+                borderRadius: "2px",
+                background: "#2563eb",
+                display: "inline-block",
+              }}
+            />
+            <span>밑줄</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 };
