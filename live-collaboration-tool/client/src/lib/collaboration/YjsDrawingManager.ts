@@ -69,6 +69,8 @@ export class YjsDrawingManager {
   private wsProvider: WebsocketProvider | null = null;
   private indexeddbProvider: IndexeddbPersistence | null = null;
   private currentUser: User;
+  // React 언마운트/화면 전환 등 "의도된 종료"에서 불필요한 경고 로그를 줄이기 위한 플래그
+  private manuallyClosed: boolean = false;
   private currentBrushSize: number = 5;
   private currentColor: string = "#000000";
   private currentStrokeId: string | null = null; // 현재 획 ID
@@ -100,7 +102,12 @@ export class YjsDrawingManager {
       // WebSocket 연결 오류 처리
       this.wsProvider.on("status", (event: { status: string }) => {
         if (event.status === "disconnected") {
+          // 컴포넌트 언마운트 등 의도된 종료는 경고로 찍지 않음
+          if (!this.manuallyClosed) {
           console.warn("Y.js WebSocket 연결 끊김");
+          } else {
+            console.debug("Y.js WebSocket 연결 종료(의도됨)");
+          }
         } else if (event.status === "connected") {
           console.log("Y.js WebSocket 연결됨");
         } else if (event.status === "connecting") {
@@ -131,7 +138,8 @@ export class YjsDrawingManager {
             };
 
             this.wsProvider.ws.onclose = (event: CloseEvent) => {
-              if (event.code !== 1000 && event.code !== 1001) {
+              // 1000/1001: 정상 종료, 1005: 브라우저가 close reason 없이 닫는 케이스가 있어 경고 제외
+              if (!this.manuallyClosed && event.code !== 1000 && event.code !== 1001 && event.code !== 1005) {
                 // 정상 종료 코드가 아니면 경고
                 console.warn(
                   `Y.js WebSocket 연결 종료 (코드: ${event.code}, 이유: ${
@@ -509,6 +517,7 @@ export class YjsDrawingManager {
   // 연결 해제
   disconnect(): void {
     try {
+      this.manuallyClosed = true;
       // WebSocket 연결 해제
       if (this.wsProvider) {
         try {

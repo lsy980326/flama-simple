@@ -1,5 +1,6 @@
 import React from "react";
 import { LiveCollabCanvas, getWSEndpoint } from "../../../live-collaboration-tool/client/src/lib";
+import { useDemoUser } from "./demoUser";
 
 /**
  * 최소 구성 캔버스 예제
@@ -8,12 +9,7 @@ import { LiveCollabCanvas, getWSEndpoint } from "../../../live-collaboration-too
  * UI는 필요에 따라 직접 구성할 수 있습니다.
  */
 export function MinimalCanvasExample() {
-  const user = {
-    id: "user-2",
-    name: "최소 구성 사용자",
-    color: "#4E6FF2",
-    isOnline: true,
-  };
+  const user = useDemoUser("user-minimal", "최소 구성 사용자");
 
   return (
     <div style={{ padding: 20 }}>

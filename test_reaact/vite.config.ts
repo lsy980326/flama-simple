@@ -14,7 +14,7 @@ export default defineConfig({
   },
   resolve: {
     // 라이브러리의 node_modules도 resolve하도록 설정
-    dedupe: ["react", "react-dom"],
+    dedupe: ["react", "react-dom", "@react-three/fiber", "@react-three/drei"],
     // IMPORTANT: `src/lib` 내부에 .js/.ts가 공존하는데, Vite 기본 해석에서 .js가 먼저 잡히면
     // 우리가 수정한 TS 소스가 반영되지 않습니다. 테스트앱에서는 TS를 우선하도록 확장자 우선순위를 명시합니다.
     extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json"],
@@ -55,6 +55,9 @@ export default defineConfig({
     include: [
       "react",
       "react-dom",
+      "@react-three/fiber",
+      "@react-three/drei",
+      "three",
       "pdfjs-dist",
       "react-pdf",
       "mammoth",

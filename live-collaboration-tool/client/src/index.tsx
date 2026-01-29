@@ -4,6 +4,7 @@ import "./index.css";
 import App from "./App";
 import DocumentViewerDemo from "./examples/DocumentViewerDemo";
 import WebtoonViewerDemo from "./examples/WebtoonViewerDemo";
+import SketchupViewerDemo from "./examples/SketchupViewerDemo";
 import reportWebVitals from "./reportWebVitals";
 
 // 전역 오류 핸들러 설정
@@ -71,6 +72,8 @@ if (viewParam === "doc") {
   RootComponent = DocumentViewerDemo;
 } else if (viewParam === "webtoon") {
   RootComponent = WebtoonViewerDemo;
+} else if (viewParam === "sketchup") {
+  RootComponent = SketchupViewerDemo;
 }
 
 const root = ReactDOM.createRoot(

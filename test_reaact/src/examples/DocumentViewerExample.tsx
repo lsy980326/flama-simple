@@ -1,5 +1,6 @@
 import React from "react";
 import { DocumentViewerWithUpload } from "../../../live-collaboration-tool/client/src/lib";
+import { useDemoUser } from "./demoUser";
 
 /**
  * 문서 뷰어 기본 사용 예제
@@ -8,10 +9,7 @@ import { DocumentViewerWithUpload } from "../../../live-collaboration-tool/clien
  * 컴포넌트 내부에서 자동으로 처리됩니다.
  */
 export function DocumentViewerExample() {
-  const user = {
-    id: "user-3",
-    name: "문서 뷰어 사용자",
-  };
+  const user = useDemoUser("user-doc", "문서 뷰어 사용자");
 
   return (
     <div style={{ padding: 20 }}>

@@ -11,4 +11,5 @@ export { DocumentViewerExample } from "./DocumentViewerExample";
 export { MultipleCanvasExample } from "./MultipleCanvasExample";
 export { IntegratedExample } from "./IntegratedExample";
 export { CanvasViewerExample } from "./CanvasViewerExample";
+export { SketchupExample } from "./SketchupExample";
 

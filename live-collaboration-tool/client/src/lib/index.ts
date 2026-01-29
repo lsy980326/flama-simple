@@ -59,3 +59,11 @@ export type {
 
 // 어노테이션
 export { AnnotationService } from "./annotations/AnnotationService";
+
+// 스케치업 뷰어 (lazy export - React 19 호환성 문제로 인해 필요시에만 로드)
+export { SketchupUploader } from "./sketchup/SketchupUploader";
+export * from "./sketchup/types";
+
+// SketchupViewer는 React 19와 호환성 문제가 있어 lazy export로 처리
+// 사용 시: import { SketchupViewer } from '@live-collaboration-tool/client/sketchup';
+// 또는: const SketchupViewer = lazy(() => import('@live-collaboration-tool/client/sketchup').then(m => ({ default: m.SketchupViewer })));

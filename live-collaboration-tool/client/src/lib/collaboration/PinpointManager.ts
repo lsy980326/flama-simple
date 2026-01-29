@@ -1,10 +1,14 @@
-import { Pinpoint } from '../types';
+import type { Pinpoint2D, LegacyPinpoint } from "../types";
+
+// 2D 핀포인트 매니저는 화면 좌표(x,y)만 다룹니다.
+// (3D 핀포인트는 SketchUp 모듈에서 별도로 처리)
+type Pinpoint2DLike = Pinpoint2D | LegacyPinpoint;
 
 export class PinpointManager {
-  private pinpoints: Map<string, Pinpoint> = new Map();
+  private pinpoints: Map<string, Pinpoint2DLike> = new Map();
   private container: HTMLElement;
-  private onPinpointClick?: (pinpoint: Pinpoint) => void;
-  private onPinpointAdd?: (pinpoint: Pinpoint) => void;
+  private onPinpointClick?: (pinpoint: Pinpoint2DLike) => void;
+  private onPinpointAdd?: (pinpoint: Pinpoint2DLike) => void;
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -17,15 +21,16 @@ export class PinpointManager {
   }
 
   // 핀포인트 추가
-  addPinpoint(x: number, y: number, comment: string, userId: string): Pinpoint {
-    const pinpoint: Pinpoint = {
+  addPinpoint(x: number, y: number, comment: string, userId: string): Pinpoint2D {
+    const pinpoint: Pinpoint2D = {
       id: this.generateId(),
+      type: "2d",
       x,
       y,
       comment,
       userId,
       createdAt: new Date(),
-      isResolved: false
+      isResolved: false,
     };
 
     this.pinpoints.set(pinpoint.id, pinpoint);
@@ -36,7 +41,7 @@ export class PinpointManager {
   }
 
   // 핀포인트 업데이트
-  updatePinpoint(pinpoint: Pinpoint): void {
+  updatePinpoint(pinpoint: Pinpoint2DLike): void {
     this.pinpoints.set(pinpoint.id, pinpoint);
     this.renderPinpoint(pinpoint);
   }
@@ -51,7 +56,7 @@ export class PinpointManager {
   }
 
   // 핀포인트 렌더링
-  private renderPinpoint(pinpoint: Pinpoint): void {
+  private renderPinpoint(pinpoint: Pinpoint2DLike): void {
     const existingElement = document.getElementById(`pinpoint-${pinpoint.id}`);
     if (existingElement) {
       existingElement.remove();
@@ -104,17 +109,17 @@ export class PinpointManager {
   }
 
   // 모든 핀포인트 가져오기
-  getAllPinpoints(): Pinpoint[] {
+  getAllPinpoints(): Pinpoint2DLike[] {
     return Array.from(this.pinpoints.values());
   }
 
   // 해결된 핀포인트만 가져오기
-  getResolvedPinpoints(): Pinpoint[] {
+  getResolvedPinpoints(): Pinpoint2DLike[] {
     return Array.from(this.pinpoints.values()).filter(p => p.isResolved);
   }
 
   // 진행 중인 핀포인트만 가져오기
-  getActivePinpoints(): Pinpoint[] {
+  getActivePinpoints(): Pinpoint2DLike[] {
     return Array.from(this.pinpoints.values()).filter(p => !p.isResolved);
   }
 
@@ -128,11 +133,11 @@ export class PinpointManager {
   }
 
   // 콜백 설정
-  setOnPinpointClick(callback: (pinpoint: Pinpoint) => void): void {
+  setOnPinpointClick(callback: (pinpoint: Pinpoint2DLike) => void): void {
     this.onPinpointClick = callback;
   }
 
-  setOnPinpointAdd(callback: (pinpoint: Pinpoint) => void): void {
+  setOnPinpointAdd(callback: (pinpoint: Pinpoint2DLike) => void): void {
     this.onPinpointAdd = callback;
   }
 }

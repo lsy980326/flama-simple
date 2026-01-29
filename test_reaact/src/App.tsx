@@ -6,6 +6,7 @@ import {
   MultipleCanvasExample,
   IntegratedExample,
   CanvasViewerExample,
+  SketchupExample,
 } from "./examples";
 
 /**
@@ -44,6 +45,11 @@ export default function App() {
       id: "integrated",
       label: "6. 통합 예제",
       component: <IntegratedExample />,
+    },
+    {
+      id: "sketchup",
+      label: "7. 스케치업 뷰어",
+      component: <SketchupExample />,
     },
   ];
 

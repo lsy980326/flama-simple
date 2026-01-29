@@ -13,7 +13,55 @@ export interface Room {
   createdAt: Date;
 }
 
-export interface Pinpoint {
+/**
+ * 2D 핀포인트 (기존)
+ */
+export interface Pinpoint2D {
+  id: string;
+  type: '2d';
+  x: number;
+  y: number;
+  comment: string;
+  userId: string;
+  createdAt: Date;
+  isResolved: boolean;
+}
+
+/**
+ * 3D 핀포인트 (스케치업용)
+ */
+export interface Pinpoint3D {
+  id: string;
+  type: '3d';
+  position: { x: number; y: number; z: number };
+  normal?: { x: number; y: number; z: number };
+  comment: string;
+  userId: string;
+  createdAt: Date;
+  isResolved: boolean;
+  viewState?: {
+    position: { x: number; y: number; z: number };
+    target: { x: number; y: number; z: number };
+    up: { x: number; y: number; z: number };
+    fov?: number;
+    near?: number;
+    far?: number;
+  };
+}
+
+/**
+ * 통합 핀포인트 타입 (2D 또는 3D)
+ */
+export type Pinpoint = Pinpoint2D | Pinpoint3D;
+
+/**
+ * @deprecated 기존 Pinpoint 인터페이스는 Pinpoint2D로 대체됨
+ * 호환성을 위해 유지하지만, 새 코드는 Pinpoint2D 또는 Pinpoint 타입 사용 권장
+ * 
+ * 참고: 이 인터페이스는 type alias와 충돌하므로 제거 예정
+ * 기존 코드 호환을 위해 임시로 유지
+ */
+export interface LegacyPinpoint {
   id: string;
   x: number;
   y: number;

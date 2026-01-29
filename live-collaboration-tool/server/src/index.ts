@@ -8,11 +8,11 @@ import { writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { createRequire } from "module";
+import { setupWSConnection } from "./yjs/setupWSConnection.js";
+import { initializeSketchupModule } from "./sketchup/index.js";
 
 // ESM에서 CommonJS 모듈 import
 const require = createRequire(import.meta.url);
-// @ts-ignore - @y/websocket-server는 ES 모듈이고 TypeScript 설정과 충돌할 수 있음
-const { setupWSConnection } = require("@y/websocket-server/utils");
 // @ts-ignore - node-hwp는 CommonJS 모듈
 const hwp = require("node-hwp");
 // multer 타입 확장
@@ -35,7 +35,14 @@ const io = new Server(server, {
   },
 });
 
-const PORT = process.env.PORT || 5000;
+// macOS에서 5000이 Control Center(AirTunes) 등에 의해 점유되는 케이스가 잦아 기본값을 5002로 사용
+// 또한 PORT=5000으로 설정되어 있어도 혼선을 피하기 위해 5002로 강제합니다.
+const DEFAULT_PORT = 5002;
+const requestedPort = parseInt(process.env.PORT || String(DEFAULT_PORT), 10);
+let currentPort = requestedPort === 5000 ? DEFAULT_PORT : requestedPort;
+if (requestedPort === 5000) {
+  console.warn("⚠️  PORT=5000은 macOS에서 충돌 가능성이 높아 5002를 사용합니다.");
+}
 const YJS_WS_PORT = parseInt(process.env.YJS_WS_PORT || "5001", 10);
 
 // 미들웨어
@@ -333,7 +340,13 @@ app.get("/", (req, res) => {
     message: "Live Collaboration Tool Server",
     version: "0.1.0",
     status: "running",
-    features: ["Socket.IO", "Y.js WebSocket", "WebRTC Signaling", "HWP Parser"],
+    features: [
+      "Socket.IO",
+      "Y.js WebSocket",
+      "WebRTC Signaling",
+      "HWP Parser",
+      ...(process.env.SKETCHUP_ENABLED !== 'false' ? ["SketchUp Converter"] : []),
+    ],
   });
 });
 
@@ -346,6 +359,19 @@ app.get("/health", (req, res) => {
     timestamp: new Date().toISOString(),
   });
 });
+
+// 스케치업 모듈 초기화 (선택적)
+// 중요: Express 라우팅 순서 때문에 "비동기 등록"을 하면 404 핸들러가 먼저 잡아먹을 수 있습니다.
+// 반드시 404 핸들러 등록 전에 "동기적으로" 라우터를 붙입니다.
+try {
+  initializeSketchupModule(app, {
+    enabled: process.env.SKETCHUP_ENABLED !== "false",
+    outputDir: process.env.SKETCHUP_OUTPUT_DIR,
+    maxFileSize: parseInt(process.env.SKETCHUP_MAX_FILE_SIZE || "104857600", 10), // 100MB
+  });
+} catch (error) {
+  console.warn("스케치업 모듈 초기화 실패 (무시됨):", error);
+}
 
 // HWP 파일 파싱 API 엔드포인트
 app.post(
@@ -566,18 +592,29 @@ io.on("connection", (socket) => {
   });
 });
 
-// 서버 시작
-server.listen(PORT, () => {
-  console.log(`🚀 서버가 포트 ${PORT}에서 실행 중입니다.`);
+function startHttpServer(port: number) {
+  server.listen(port, () => {
+    console.log(`🚀 서버가 포트 ${port}에서 실행 중입니다.`);
   console.log(`📡 Socket.IO 서버 준비 완료`);
   console.log(`🔗 Y.js WebSocket 서버가 포트 ${YJS_WS_PORT}에서 실행 중입니다.`);
-  console.log(`💚 헬스 체크: http://localhost:${PORT}/health`);
+    console.log(`💚 헬스 체크: http://localhost:${port}/health`);
 });
+}
+
+// 서버 시작
+startHttpServer(currentPort);
 
 // 서버 오류 처리
 server.on("error", (error: NodeJS.ErrnoException) => {
   if (error.code === "EADDRINUSE") {
-    console.error(`포트 ${PORT}가 이미 사용 중입니다.`);
+    console.error(`포트 ${currentPort}가 이미 사용 중입니다.`);
+    // 5000이 점유된 경우 자동으로 5002로 fallback
+    if (currentPort !== DEFAULT_PORT) {
+      currentPort = DEFAULT_PORT;
+      console.warn(`➡️  포트 충돌 회피: ${DEFAULT_PORT}로 재시도합니다...`);
+      startHttpServer(currentPort);
+      return;
+    }
     process.exit(1);
   } else {
     console.error("서버 오류:", error);

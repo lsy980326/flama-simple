@@ -1,5 +1,6 @@
 import React from "react";
 import { LiveCollabCanvas, getWSEndpoint } from "../../../live-collaboration-tool/client/src/lib";
+import { useDemoUser } from "./demoUser";
 
 /**
  * 가장 기본적인 캔버스 사용 예제
@@ -8,12 +9,7 @@ import { LiveCollabCanvas, getWSEndpoint } from "../../../live-collaboration-too
  * 모든 기능이 라이브러리 내부에서 처리됩니다.
  */
 export function BasicCanvasExample() {
-  const user = {
-    id: "user-1",
-    name: "사용자",
-    color: "#FF6B6B",
-    isOnline: true,
-  };
+  const user = useDemoUser("user-basic", "사용자");
 
   return (
     <div style={{ padding: 20 }}>

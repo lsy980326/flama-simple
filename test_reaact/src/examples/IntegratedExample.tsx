@@ -4,6 +4,7 @@ import {
   DocumentViewerWithUpload,
   getWSEndpoint,
 } from "../../../live-collaboration-tool/client/src/lib";
+import { useDemoUser } from "./demoUser";
 
 /**
  * 통합 예제
@@ -11,12 +12,7 @@ import {
  * 캔버스와 문서 뷰어를 함께 사용하는 예제입니다.
  */
 export function IntegratedExample() {
-  const user = {
-    id: "user-integrated",
-    name: "통합 사용자",
-    color: "#10B981",
-    isOnline: true,
-  };
+  const user = useDemoUser("user-integrated", "통합 사용자");
 
   return (
     <div style={{ padding: 20 }}>

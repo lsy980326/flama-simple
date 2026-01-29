@@ -3,6 +3,7 @@ import {
   LiveCollabCanvas,
   getWSEndpoint,
 } from "../../../live-collaboration-tool/client/src/lib";
+import { useDemoUser } from "./demoUser";
 
 /**
  * 여러 캔버스 동시 사용 예제
@@ -11,19 +12,8 @@ import {
  * 다른 roomId를 사용하면 독립적인 캔버스가 됩니다.
  */
 export function MultipleCanvasExample() {
-  const user1 = {
-    id: "user-multi-1",
-    name: "사용자 1",
-    color: "#FF6B6B",
-    isOnline: true,
-  };
-
-  const user2 = {
-    id: "user-multi-2",
-    name: "사용자 2",
-    color: "#4E6FF2",
-    isOnline: true,
-  };
+  const user1 = useDemoUser("user-multi-1", "사용자 1");
+  const user2 = useDemoUser("user-multi-2", "사용자 2");
 
   return (
     <div style={{ padding: 20 }}>
