@@ -69,5 +69,19 @@ desktop.ini
 # Commit message files
 COMMIT_MESSAGE.txt
 
+# 업로드된 파일들 (변환된 모델, 업로드된 파일 등)
+**/uploads/
+**/uploads/**
+*.glb
+*.gltf
+*.dae
+*.skp
+*.obj
+*.fbx
+*.3ds
+
+# 테스트/샘플 파일
+sample.*
+test_reaact/test
 
 lib-test/
