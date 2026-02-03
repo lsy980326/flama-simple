@@ -113,10 +113,12 @@ export function initializeSketchupModule(
         // outputDir 보장
         // (sync로 처리해도 충분히 빠르고 단순)
         mkdirSync(outputDir, { recursive: true });
-        const filename = `${fileId}.glb`;
-        const fullPath = join(outputDir, filename);
+        // 파일별 폴더로 저장 (GLB 내부의 image.uri 상대 경로 텍스처 로딩을 위해)
+        const fileDir = join(outputDir, fileId);
+        mkdirSync(fileDir, { recursive: true });
+        const fullPath = join(fileDir, 'model.glb');
         writeFileSync(fullPath, buf);
-        res.json({ ok: true, glbUrl: `/api/sketchup/models/${filename}` });
+        res.json({ ok: true, glbUrl: `/api/sketchup/models/${fileId}/model.glb` });
       } catch (e) {
         res.status(500).json({ error: '저장 실패', message: e instanceof Error ? e.message : String(e) });
       }

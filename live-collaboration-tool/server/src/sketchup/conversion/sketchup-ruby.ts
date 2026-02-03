@@ -96,12 +96,28 @@ begin
   Sketchup.open_file(input)
   model = Sketchup.active_model
 
-  # Collada(.dae) export 옵션 (필요 시 조정)
+  # Collada(.dae) export 옵션
+  # SketchUp의 export API는 제한적이지만, 기본적으로 텍스처는 포함됨
+  # 텍스처는 DAE 파일과 같은 디렉토리에 이미지 파일로 저장됨
+  # 참고: SketchUp의 model.export는 Collada export 시 제한적인 옵션만 지원
+  # 텍스처는 기본적으로 포함되지만, 프로시저럴 재질이나 특수 매핑은 비트맵으로 변환되지 않을 수 있음
   options = {
     :triangulated_faces => true,
     :doublesided_faces => true
   }
 
+  # 재질 및 텍스처 정보 로깅 (디버깅용)
+  materials = model.materials
+  lct_log("Materials count: #{materials.length}")
+  materials.each_with_index do |mat, idx|
+    if mat.texture
+      lct_log("Material[#{idx}] '#{mat.name}' has texture: #{mat.texture.filename rescue 'unknown'}")
+    else
+      lct_log("Material[#{idx}] '#{mat.name}' has NO texture (color only)")
+    end
+  end
+
+  # DAE export (텍스처는 자동으로 같은 디렉토리에 저장됨)
   ok = model.export(output, options)
   lct_log(ok ? "EXPORT_OK" : "EXPORT_FAIL")
   puts(ok ? "EXPORT_OK" : "EXPORT_FAIL")

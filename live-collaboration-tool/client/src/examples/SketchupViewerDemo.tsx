@@ -4,7 +4,8 @@
  */
 
 import React, { useState, useRef } from 'react';
-import { SketchupViewer, SketchupUploader, Vector3D, CameraState } from '../lib';
+import { SketchupViewer, SketchupUploader, Vector3D, CameraState, SketchupPinpoint } from '../lib';
+import { SketchupPinpointForm } from '../lib/components/SketchupPinpointForm';
 
 export default function SketchupViewerDemo() {
   const [glbUrl, setGlbUrl] = useState<string | null>(null);
@@ -14,10 +15,16 @@ export default function SketchupViewerDemo() {
   const [error, setError] = useState<string | null>(null);
   const [uploadedFileName, setUploadedFileName] = useState<string | null>(null);
   const [clickedPosition, setClickedPosition] = useState<Vector3D | null>(null);
+  const [clickedNormal, setClickedNormal] = useState<Vector3D | undefined>(undefined);
   const [cameraState, setCameraState] = useState<CameraState | null>(null);
+  const [pinpoints, setPinpoints] = useState<SketchupPinpoint[]>([]);
+  const [showPinpointForm, setShowPinpointForm] = useState(false);
+  const [restoreCameraState, setRestoreCameraState] = useState<CameraState | null>(null);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploaderRef = useRef<SketchupUploader | null>(null);
+  
+  const userId = 'demo-user-1';
 
   // 서버 URL 설정 (환경 변수 또는 기본값)
   // 서버 HTTP 포트 기본값: 5002 (macOS에서 5000 충돌 케이스 대응)
@@ -81,12 +88,48 @@ export default function SketchupViewerDemo() {
   };
 
   const handleModelClick = (position: Vector3D, normal?: Vector3D) => {
-    console.log('모델 클릭:', { position, normal });
+    console.log('[Demo] 모델 클릭:', { position, normal });
     setClickedPosition(position);
+    setClickedNormal(normal);
+    setShowPinpointForm(true);
+    console.log('[Demo] 폼 표시 상태:', true, 'clickedPosition:', position);
   };
+  
+  React.useEffect(() => {
+    console.log('[Demo] 폼 상태 변경:', { showPinpointForm, clickedPosition });
+  }, [showPinpointForm, clickedPosition]);
 
   const handleCameraChange = (state: CameraState) => {
     setCameraState(state);
+  };
+
+  const handlePinpointSubmit = (pinpointData: Omit<SketchupPinpoint, 'id' | 'createdAt'>) => {
+    const newPinpoint: SketchupPinpoint = {
+      ...pinpointData,
+      id: `pinpoint-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      createdAt: new Date(),
+    };
+    setPinpoints((prev) => [...prev, newPinpoint]);
+    setShowPinpointForm(false);
+    setClickedPosition(null);
+    setClickedNormal(undefined);
+  };
+
+  const handlePinpointCancel = () => {
+    setShowPinpointForm(false);
+    setClickedPosition(null);
+    setClickedNormal(undefined);
+  };
+
+  const handlePinpointClick = (pinpoint: SketchupPinpoint) => {
+    console.log('핀포인트 클릭:', pinpoint);
+    if (pinpoint.viewState) {
+      setRestoreCameraState(pinpoint.viewState);
+    }
+  };
+
+  const handleDeletePinpoint = (id: string) => {
+    setPinpoints((prev) => prev.filter((p) => p.id !== id));
   };
 
   const handleLoadGlbDirectly = () => {
@@ -198,12 +241,22 @@ export default function SketchupViewerDemo() {
               border: '2px solid #333', 
               borderRadius: '8px',
               overflow: 'hidden',
-              marginBottom: '20px'
+              marginBottom: '20px',
+              position: 'relative'
             }}>
               <SketchupViewer
                 glbUrl={glbUrl}
                 onModelClick={handleModelClick}
-                onCameraChange={handleCameraChange}
+                onCameraChange={(state) => {
+                  handleCameraChange(state);
+                  // 카메라 복원 후 상태 리셋
+                  if (restoreCameraState) {
+                    setRestoreCameraState(null);
+                  }
+                }}
+                pinpoints={pinpoints}
+                onPinpointClick={handlePinpointClick}
+                cameraState={restoreCameraState || undefined}
                 width={800}
                 height={600}
                 backgroundColor="#f5f5f5"
@@ -236,12 +289,26 @@ export default function SketchupViewerDemo() {
                   </div>
                 )}
               />
+              
+              {/* 핀포인트 입력 폼 */}
+              {showPinpointForm && clickedPosition && (
+                <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, pointerEvents: 'none', zIndex: 1000 }}>
+                  <SketchupPinpointForm
+                    position={clickedPosition}
+                    normal={clickedNormal}
+                    cameraState={cameraState || undefined}
+                    userId={userId}
+                    onSubmit={handlePinpointSubmit}
+                    onCancel={handlePinpointCancel}
+                  />
+                </div>
+              )}
             </div>
 
             {/* 정보 패널 */}
             <div style={{ 
               display: 'grid', 
-              gridTemplateColumns: '1fr 1fr', 
+              gridTemplateColumns: '1fr 1fr 1fr', 
               gap: '15px',
               marginTop: '20px'
             }}>
@@ -297,6 +364,76 @@ export default function SketchupViewerDemo() {
                   </p>
                 )}
               </div>
+
+              {/* 핀포인트 목록 */}
+              <div style={{ 
+                padding: '15px', 
+                backgroundColor: '#f9f9f9', 
+                borderRadius: '8px',
+                border: '1px solid #ddd'
+              }}>
+                <h4 style={{ marginTop: 0 }}>핀포인트 ({pinpoints.length})</h4>
+                {pinpoints.length > 0 ? (
+                  <div style={{ maxHeight: '200px', overflowY: 'auto' }}>
+                    {pinpoints.map((pinpoint) => (
+                      <div
+                        key={pinpoint.id}
+                        style={{
+                          padding: '8px',
+                          marginBottom: '8px',
+                          backgroundColor: 'white',
+                          borderRadius: '4px',
+                          border: '1px solid #ddd',
+                          fontSize: '12px'
+                        }}
+                      >
+                        <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>
+                          {pinpoint.comment.length > 30 
+                            ? `${pinpoint.comment.substring(0, 30)}...` 
+                            : pinpoint.comment}
+                        </div>
+                        <div style={{ color: '#666', fontSize: '11px', marginBottom: '4px' }}>
+                          {new Date(pinpoint.createdAt).toLocaleString()}
+                        </div>
+                        <div style={{ display: 'flex', gap: '5px' }}>
+                          <button
+                            onClick={() => handlePinpointClick(pinpoint)}
+                            style={{
+                              padding: '4px 8px',
+                              fontSize: '11px',
+                              backgroundColor: '#2196F3',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '3px',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            보기
+                          </button>
+                          <button
+                            onClick={() => handleDeletePinpoint(pinpoint.id)}
+                            style={{
+                              padding: '4px 8px',
+                              fontSize: '11px',
+                              backgroundColor: '#f44336',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '3px',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            삭제
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p style={{ color: '#666', fontSize: '14px' }}>
+                    핀포인트가 없습니다.
+                  </p>
+                )}
+              </div>
             </div>
           </div>
         ) : (
@@ -330,6 +467,8 @@ export default function SketchupViewerDemo() {
           <li><strong>변환 대기:</strong> 서버에서 .skp 파일을 .glb로 변환하는 동안 진행률이 표시됩니다.</li>
           <li><strong>모델 조작:</strong> 변환 완료 후 3D 뷰어에서 마우스로 모델을 회전, 확대/축소할 수 있습니다.</li>
           <li><strong>클릭 테스트:</strong> 모델을 클릭하면 해당 위치의 3D 좌표가 표시됩니다.</li>
+          <li><strong>핀포인트 추가:</strong> 모델을 클릭하면 피드백 입력 폼이 나타나며, 핀포인트를 추가할 수 있습니다.</li>
+          <li><strong>핀포인트 보기:</strong> 핀포인트 목록에서 "보기" 버튼을 클릭하면 해당 핀포인트 생성 시점의 카메라 상태로 이동합니다.</li>
           <li><strong>직접 로드:</strong> 이미 변환된 .glb 파일이 있다면 "GLB 직접 로드" 버튼을 사용하세요.</li>
         </ul>
         <div style={{ marginTop: '15px', fontSize: '12px', color: '#666' }}>

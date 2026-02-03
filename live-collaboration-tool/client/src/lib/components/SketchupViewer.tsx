@@ -9,12 +9,19 @@ import React from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { Vector3D, CameraState } from "../sketchup/types";
+import { Vector3D, CameraState, SketchupPinpoint } from "../sketchup/types";
+
+export interface SketchupViewerRef {
+  captureThumbnail: (cameraState: CameraState) => Promise<string | null>;
+}
 
 export interface SketchupViewerProps {
   glbUrl: string;
   onCameraChange?: (state: CameraState) => void;
   onModelClick?: (position: Vector3D, normal?: Vector3D) => void;
+  pinpoints?: SketchupPinpoint[];
+  onPinpointClick?: (pinpoint: SketchupPinpoint) => void;
+  onThumbnailRequest?: (cameraState: CameraState) => Promise<string | null>;
   width?: number;
   height?: number;
   backgroundColor?: string;
@@ -26,6 +33,39 @@ export interface SketchupViewerProps {
   errorComponent?: (error: Error) => React.ReactNode;
   className?: string;
   style?: React.CSSProperties;
+}
+
+// 썸네일 생성 헬퍼 함수
+export async function captureThumbnail(
+  renderer: THREE.WebGLRenderer,
+  scene: THREE.Scene,
+  camera: THREE.PerspectiveCamera,
+  width: number = 200,
+  height: number = 150
+): Promise<string | null> {
+  try {
+    // 임시 렌더러 생성 (썸네일용)
+    const thumbnailRenderer = new THREE.WebGLRenderer({ 
+      antialias: true, 
+      preserveDrawingBuffer: true 
+    });
+    thumbnailRenderer.setSize(width, height);
+    thumbnailRenderer.setClearColor(renderer.getClearColor(new THREE.Color()));
+    
+    // 렌더링
+    thumbnailRenderer.render(scene, camera);
+    
+    // 캔버스에서 데이터 URL 추출
+    const dataUrl = thumbnailRenderer.domElement.toDataURL('image/png');
+    
+    // 정리
+    thumbnailRenderer.dispose();
+    
+    return dataUrl;
+  } catch (error) {
+    console.error('썸네일 생성 실패:', error);
+    return null;
+  }
 }
 
 function toVec3(v?: Vector3D): THREE.Vector3 {
@@ -90,10 +130,13 @@ function autoFrameModel(
   controls.update();
 }
 
-export const SketchupViewer: React.FC<SketchupViewerProps> = ({
+export const SketchupViewer = React.forwardRef<SketchupViewerRef, SketchupViewerProps>(({
   glbUrl,
   onCameraChange,
   onModelClick,
+  pinpoints = [],
+  onPinpointClick,
+  onThumbnailRequest,
   width = 800,
   height = 600,
   backgroundColor = "#f0f0f0",
@@ -105,7 +148,7 @@ export const SketchupViewer: React.FC<SketchupViewerProps> = ({
   errorComponent,
   className,
   style,
-}) => {
+}, ref) => {
   const containerRef = React.useRef<HTMLDivElement | null>(null);
   const rendererRef = React.useRef<THREE.WebGLRenderer | null>(null);
   const sceneRef = React.useRef<THREE.Scene | null>(null);
@@ -114,6 +157,8 @@ export const SketchupViewer: React.FC<SketchupViewerProps> = ({
   const modelRootRef = React.useRef<THREE.Object3D | null>(null);
   const animationRef = React.useRef<number | null>(null);
   const lastCamStateRef = React.useRef<string>("");
+  const pinpointsGroupRef = React.useRef<THREE.Group | null>(null);
+  const pinpointMarkersRef = React.useRef<Map<string, THREE.Object3D>>(new Map());
 
   const [error, setError] = React.useState<Error | null>(null);
   const [isLoading, setIsLoading] = React.useState<boolean>(true);
@@ -141,6 +186,12 @@ export const SketchupViewer: React.FC<SketchupViewerProps> = ({
     renderer.setClearColor(new THREE.Color(backgroundColor));
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    // glTF 텍스처는 기본적으로 sRGB(베이스컬러) 기준이 많아서, 출력 색공간을 sRGB로 맞춰야
+    // 색이 뿌옇거나 어둡게 보이지 않습니다.
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    // PBR 톤매핑(선택): 텍스처가 "있는 것처럼 보이는데 너무 어둡다" 류 체감 개선
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
     rendererRef.current = renderer;
     container.appendChild(renderer.domElement);
 
@@ -149,6 +200,10 @@ export const SketchupViewer: React.FC<SketchupViewerProps> = ({
     controls.dampingFactor = 0.05;
     controls.minDistance = 1;
     controls.maxDistance = 100;
+    // 더블 클릭 이벤트 비활성화 (클릭 이벤트와 충돌 방지)
+    controls.enablePan = true;
+    controls.enableZoom = true;
+    controls.enableRotate = true;
     controlsRef.current = controls;
 
     // lights
@@ -169,10 +224,31 @@ export const SketchupViewer: React.FC<SketchupViewerProps> = ({
       scene.add(axes);
     }
 
+    // 핀포인트 그룹 생성
+    const pinpointsGroup = new THREE.Group();
+    pinpointsGroup.name = "pinpoints";
+    scene.add(pinpointsGroup);
+    pinpointsGroupRef.current = pinpointsGroup;
+
     // render loop
     const tick = () => {
       animationRef.current = requestAnimationFrame(tick);
       controls.update();
+      
+      // 스프라이트가 항상 카메라를 향하도록 업데이트
+      const pinpointsGroup = pinpointsGroupRef.current;
+      if (pinpointsGroup) {
+        pinpointsGroup.children.forEach((group) => {
+          if (group instanceof THREE.Group) {
+            group.children.forEach((child) => {
+              if (child instanceof THREE.Sprite) {
+                child.lookAt(camera.position);
+              }
+            });
+          }
+        });
+      }
+      
       renderer.render(scene, camera);
 
       if (onCameraChange) {
@@ -188,22 +264,77 @@ export const SketchupViewer: React.FC<SketchupViewerProps> = ({
 
     // click -> raycast
     const handleClick = (event: MouseEvent) => {
-      if (!onModelClick) return;
+      // OrbitControls의 더블 클릭 이벤트와 충돌 방지
+      if (event.detail === 2) {
+        return; // 더블 클릭은 무시
+      }
+      
+      console.log('[SketchupViewer] 클릭 이벤트 발생', { 
+        clientX: event.clientX, 
+        clientY: event.clientY,
+        detail: event.detail 
+      });
+      
       const model = modelRootRef.current;
-      if (!model) return;
+      if (!model) {
+        console.log('[SketchupViewer] 모델이 없습니다');
+        return;
+      }
+      
+      // 모델이 씬에 추가되었는지 확인
+      if (!scene.children.includes(model)) {
+        console.log('[SketchupViewer] 모델이 씬에 없습니다');
+        return;
+      }
 
       const rect = renderer.domElement.getBoundingClientRect();
       const mouse = new THREE.Vector2(
         ((event.clientX - rect.left) / rect.width) * 2 - 1,
         -((event.clientY - rect.top) / rect.height) * 2 + 1
       );
+      console.log('[SketchupViewer] 마우스 좌표:', mouse);
+      
       const raycaster = new THREE.Raycaster();
       raycaster.setFromCamera(mouse, camera);
+      
+      // 먼저 핀포인트 마커와 교차 검사
+      const pinpointsGroup = pinpointsGroupRef.current;
+      if (pinpointsGroup && onPinpointClick) {
+        const pinpointIntersects = raycaster.intersectObjects(pinpointsGroup.children, true);
+        if (pinpointIntersects.length > 0) {
+          console.log('[SketchupViewer] 핀포인트 클릭 감지');
+          const hit = pinpointIntersects[0];
+          const marker = hit.object;
+          const pinpointId = marker.userData.pinpointId;
+          if (pinpointId) {
+            // 핀포인트 찾기
+            const pinpoint = Array.from(pinpointMarkersRef.current.entries())
+              .find(([id]) => id === pinpointId)?.[1]?.userData.pinpoint as SketchupPinpoint;
+            if (pinpoint) {
+              onPinpointClick(pinpoint);
+              return;
+            }
+          }
+        }
+      }
+
+      // 모델 클릭 처리
+      if (!onModelClick) {
+        console.log('[SketchupViewer] onModelClick 콜백이 없습니다');
+        return;
+      }
+      
       const intersects = raycaster.intersectObject(model, true);
-      if (intersects.length === 0) return;
+      console.log('[SketchupViewer] 교차점 개수:', intersects.length);
+      
+      if (intersects.length === 0) {
+        console.log('[SketchupViewer] 모델과 교차하지 않음');
+        return;
+      }
 
       const hit = intersects[0];
       const position: Vector3D = { x: hit.point.x, y: hit.point.y, z: hit.point.z };
+      console.log('[SketchupViewer] 클릭 위치:', position);
 
       let normal: Vector3D | undefined;
       if (hit.face) {
@@ -212,6 +343,8 @@ export const SketchupViewer: React.FC<SketchupViewerProps> = ({
         const n = hit.face.normal.clone().applyMatrix3(normalMatrix).normalize();
         normal = { x: n.x, y: n.y, z: n.z };
       }
+      
+      console.log('[SketchupViewer] onModelClick 호출');
       onModelClick(position, normal);
     };
     renderer.domElement.addEventListener("click", handleClick);
@@ -223,6 +356,11 @@ export const SketchupViewer: React.FC<SketchupViewerProps> = ({
 
       if (grid) scene.remove(grid);
       if (axes) scene.remove(axes);
+      if (pinpointsGroupRef.current) {
+        scene.remove(pinpointsGroupRef.current);
+        pinpointsGroupRef.current = null;
+      }
+      pinpointMarkersRef.current.clear();
 
       controls.dispose();
       renderer.dispose();
@@ -323,6 +461,136 @@ export const SketchupViewer: React.FC<SketchupViewerProps> = ({
     };
   }, [glbUrl]);
 
+  // 핀포인트 마커 업데이트
+  React.useEffect(() => {
+    const scene = sceneRef.current;
+    const pinpointsGroup = pinpointsGroupRef.current;
+    if (!scene || !pinpointsGroup) return;
+
+    const markers = pinpointMarkersRef.current;
+    const currentIds = new Set(pinpoints.map(p => p.id));
+
+    // 제거된 핀포인트 마커 삭제
+    for (const [id, marker] of markers.entries()) {
+      if (!currentIds.has(id)) {
+        pinpointsGroup.remove(marker);
+        marker.geometry?.dispose();
+        if (Array.isArray(marker.material)) {
+          marker.material.forEach(m => m.dispose());
+        } else {
+          marker.material?.dispose();
+        }
+        markers.delete(id);
+      }
+    }
+
+    // 새 핀포인트 마커 추가 또는 업데이트
+    for (const pinpoint of pinpoints) {
+      if (markers.has(pinpoint.id)) {
+        // 기존 마커 위치 및 상태 업데이트
+        const group = markers.get(pinpoint.id)!;
+        group.position.set(pinpoint.position.x, pinpoint.position.y, pinpoint.position.z);
+        group.userData.pinpoint = pinpoint;
+        
+        // 그룹 내부의 마커와 스프라이트 색상 업데이트
+        group.children.forEach((child) => {
+          if (child instanceof THREE.Mesh || child instanceof THREE.Sprite) {
+            const material = child.material as THREE.MeshBasicMaterial | THREE.SpriteMaterial;
+            if (material) {
+              material.color.set(pinpoint.isResolved ? 0x00ff00 : 0xff0000);
+            }
+          }
+        });
+      } else {
+        // 새 마커 생성
+        const geometry = new THREE.SphereGeometry(0.1, 16, 16);
+        const material = new THREE.MeshBasicMaterial({
+          color: pinpoint.isResolved ? 0x00ff00 : 0xff0000,
+          transparent: true,
+          opacity: 0.8,
+        });
+        const marker = new THREE.Mesh(geometry, material);
+        marker.position.set(pinpoint.position.x, pinpoint.position.y, pinpoint.position.z);
+        marker.userData.pinpointId = pinpoint.id;
+        marker.userData.pinpoint = pinpoint;
+        
+        // 항상 카메라를 향하도록 (Billboard 효과)
+        const sprite = new THREE.Sprite(
+          new THREE.SpriteMaterial({
+            color: pinpoint.isResolved ? 0x00ff00 : 0xff0000,
+            transparent: true,
+            opacity: 0.9,
+          })
+        );
+        sprite.scale.set(0.2, 0.2, 1);
+        sprite.position.copy(marker.position);
+        sprite.userData.pinpointId = pinpoint.id;
+        sprite.userData.pinpoint = pinpoint;
+        
+        // 구체와 스프라이트를 그룹으로 묶기
+        const group = new THREE.Group();
+        group.add(marker);
+        group.add(sprite);
+        group.userData.pinpointId = pinpoint.id;
+        group.userData.pinpoint = pinpoint;
+        
+        pinpointsGroup.add(group);
+        markers.set(pinpoint.id, group);
+      }
+    }
+  }, [pinpoints]);
+
+  // 썸네일 생성 함수를 외부에 노출
+  React.useImperativeHandle(ref, () => ({
+    captureThumbnail: async (cameraState: CameraState): Promise<string | null> => {
+      const scene = sceneRef.current;
+      const camera = cameraRef.current;
+      const renderer = rendererRef.current;
+      if (!scene || !camera || !renderer) return null;
+
+      // 카메라 상태 임시 저장
+      const originalPosition = camera.position.clone();
+      const originalTarget = controlsRef.current?.target.clone();
+      const originalFov = camera.fov;
+      const originalNear = camera.near;
+      const originalFar = camera.far;
+
+      // 썸네일용 카메라 상태 설정
+      camera.position.set(cameraState.position.x, cameraState.position.y, cameraState.position.z);
+      if (controlsRef.current) {
+        controlsRef.current.target.set(cameraState.target.x, cameraState.target.y, cameraState.target.z);
+        controlsRef.current.update();
+      }
+      if (cameraState.fov) camera.fov = cameraState.fov;
+      if (cameraState.near) camera.near = cameraState.near;
+      if (cameraState.far) camera.far = cameraState.far;
+      camera.updateProjectionMatrix();
+
+      // 썸네일 생성
+      const thumbnail = await captureThumbnail(renderer, scene, camera, 200, 150);
+
+      // 카메라 상태 복원
+      camera.position.copy(originalPosition);
+      if (controlsRef.current && originalTarget) {
+        controlsRef.current.target.copy(originalTarget);
+        controlsRef.current.update();
+      }
+      camera.fov = originalFov;
+      camera.near = originalNear;
+      camera.far = originalFar;
+      camera.updateProjectionMatrix();
+
+      return thumbnail;
+    }
+  }), []);
+
+  // onThumbnailRequest가 있으면 외부에서 썸네일 요청 가능하도록 설정
+  React.useEffect(() => {
+    if (onThumbnailRequest && sceneRef.current && cameraRef.current && rendererRef.current) {
+      // 외부에서 썸네일 요청 시 사용할 수 있도록 준비
+    }
+  }, [onThumbnailRequest]);
+
   if (error && errorComponent) {
     return <>{errorComponent(error)}</>;
   }
@@ -343,4 +611,6 @@ export const SketchupViewer: React.FC<SketchupViewerProps> = ({
       {isLoading && (loadingComponent ?? null)}
     </div>
   );
-};
+});
+
+SketchupViewer.displayName = 'SketchupViewer';

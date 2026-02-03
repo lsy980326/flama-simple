@@ -35,6 +35,7 @@ export interface SketchupPinpoint {
   createdAt: Date;
   isResolved: boolean;
   viewState?: CameraState;   // 피드백 생성 시 카메라 상태 (선택)
+  thumbnail?: string;        // 썸네일 이미지 (data URL)
 }
 
 /**
