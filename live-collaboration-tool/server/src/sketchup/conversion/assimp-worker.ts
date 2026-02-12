@@ -8,6 +8,7 @@ import { getConversionQueue, ConversionJobData } from './queue';
 import { extname } from 'path';
 import { tmpdir } from 'os';
 import { convertSkpToDaeWithSketchupRuby } from './sketchup-ruby';
+import { convertSkpToIntermediateWithSketchupCSDK } from './sketchup-c-sdk';
 
 const execAsync = promisify(exec);
 
@@ -15,6 +16,10 @@ const ASSIMP_PATH = process.env.ASSIMP_PATH || 'assimp';
 const OUTPUT_DIR = process.env.SKETCHUP_OUTPUT_DIR || './uploads/converted';
 const STORE_URL = process.env.SKETCHUP_STORE_URL; // 예: http://main-server:5002
 const INTERNAL_KEY = process.env.SKETCHUP_INTERNAL_KEY;
+const CONVERTER = (
+  process.env.SKETCHUP_CONVERTER ||
+  (process.env.SKETCHUP_CSDK_BIN ? 'sdk' : 'assimp')
+).toLowerCase(); // assimp | sdk
 
 function glbOutputFor(fileId: string) {
   // Assimp가 GLB에 텍스처를 "임베드"하지 않고 image.uri로 외부 파일을 참조하는 경우가 있습니다.
@@ -62,32 +67,49 @@ export function initializeAssimpWorker() {
         await job.progress(30);
 
         const originalExt = extname(job.data.originalFilename || inputPath).toLowerCase();
+        console.log(`[변환] converter=${CONVERTER} ext=${originalExt} fileId=${fileId} conversionId=${conversionId}`);
         let sourcePath = inputPath;
         let intermediateDir: string | null = null;
         let intermediateDaePath: string | null = null;
 
         if (originalExt === '.skp') {
-          // .skp → .dae
-          // SketchUp Collada export는 DAE와 함께 텍스처 이미지를 "같은 디렉토리"에 생성합니다.
-          // /tmp 같은 공용 디렉토리에 바로 export 하면 파일명 충돌/덮어쓰기로 텍스처가 누락될 수 있어
-          // 변환마다 고유 디렉토리를 만들고 그 안에 DAE+텍스처를 묶습니다.
-          intermediateDir = join(tmpdir(), `lct-${fileId}-${conversionId}`);
-          await fs.mkdir(intermediateDir, { recursive: true });
-          intermediateDaePath = join(intermediateDir, 'model.dae');
-          await job.progress(40);
-          await convertSkpToDaeWithSketchupRuby({
-            inputSkpPath: inputPath,
-            outputDaePath: intermediateDaePath,
-          });
-          sourcePath = intermediateDaePath;
+          if (CONVERTER === 'sdk') {
+            // .skp → (obj/dae) (SketchUp C SDK 기반, 사용자 제공 CLI) → Assimp로 .glb
+            intermediateDir = join(tmpdir(), `lct-${fileId}-${conversionId}`);
+            await fs.mkdir(intermediateDir, { recursive: true });
+
+            await job.progress(45);
+            const format =
+              (process.env.SKETCHUP_CSDK_FORMAT || 'obj').toLowerCase() === 'dae' ? 'dae' : 'obj';
+            const { intermediatePath } = await convertSkpToIntermediateWithSketchupCSDK({
+              inputSkpPath: inputPath,
+              outputDirForFile: intermediateDir,
+              format,
+            });
+            sourcePath = intermediatePath;
+          } else {
+            // .skp → .dae
+            // SketchUp Collada export는 DAE와 함께 텍스처 이미지를 "같은 디렉토리"에 생성합니다.
+            // /tmp 같은 공용 디렉토리에 바로 export 하면 파일명 충돌/덮어쓰기로 텍스처가 누락될 수 있어
+            // 변환마다 고유 디렉토리를 만들고 그 안에 DAE+텍스처를 묶습니다.
+            intermediateDir = join(tmpdir(), `lct-${fileId}-${conversionId}`);
+            await fs.mkdir(intermediateDir, { recursive: true });
+            intermediateDaePath = join(intermediateDir, 'model.dae');
+            await job.progress(40);
+            await convertSkpToDaeWithSketchupRuby({
+              inputSkpPath: inputPath,
+              outputDaePath: intermediateDaePath,
+            });
+            sourcePath = intermediateDaePath;
+          }
         }
 
-        // Assimp로 source → glb
+        // Assimp로 source → glb (C SDK 변환을 선택한 경우에는 이미 outputPath가 생성됨)
         // 텍스처 포함을 위해 DAE 파일이 있는 디렉토리에서 실행
         // 하지만 출력 파일은 절대 경로로 지정해야 함
         const command = `${ASSIMP_PATH} export "${sourcePath}" "${outputPath}" glb`;
-        
-        // DAE 파일이 있는 경우, 같은 디렉토리에서 실행하여 텍스처 경로 문제 해결
+
+        // 입력(DAE/OBJ)이 있는 디렉토리에서 실행하여 텍스처 경로 문제 해결
         // 출력 파일은 절대 경로로 지정하므로 cwd와 관계없이 작동
         const workingDir = intermediateDir ?? join(outputPath, '..');
 
@@ -98,12 +120,12 @@ export function initializeAssimpWorker() {
 
         await job.progress(70);
 
-        // DAE export 후 텍스처 파일 확인 및 로깅
+        // 중간 산출물 export 후 텍스처 파일 확인 및 로깅
         if (intermediateDir) {
           const srcTexDir = join(intermediateDir, 'model');
           if (existsSync(srcTexDir)) {
             const texFiles = await fs.readdir(srcTexDir).catch(() => []);
-            console.log(`[변환] DAE 텍스처 파일 개수: ${texFiles.length} (${intermediateDir}/model/)`);
+            console.log(`[변환] 텍스처 파일 개수: ${texFiles.length} (${intermediateDir}/model/)`);
             if (texFiles.length > 0) {
               console.log(`[변환] 텍스처 샘플: ${texFiles.slice(0, 5).join(', ')}`);
             }
@@ -112,7 +134,7 @@ export function initializeAssimpWorker() {
           }
         }
 
-        // Assimp가 image.uri로 외부 텍스처를 참조한 경우를 대비해 텍스처 폴더를 결과 폴더로 복사
+        // Assimp 경로에서 image.uri로 외부 텍스처를 참조한 경우를 대비해 텍스처 폴더를 결과 폴더로 복사
         // (SketchUp이 model.dae 옆에 model/ 폴더로 텍스처를 생성하는 패턴을 사용)
         if (intermediateDir) {
           const srcTexDir = join(intermediateDir, 'model');

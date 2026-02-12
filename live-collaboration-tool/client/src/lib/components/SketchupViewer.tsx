@@ -120,12 +120,21 @@ function autoFrameModel(
   const fov = (camera.fov * Math.PI) / 180;
   // 화면에 들어오게 대략적인 거리
   const dist = maxDim / (2 * Math.tan(fov / 2));
-  const direction = new THREE.Vector3(1, 1, 1).normalize();
+  // 정면(수직/수평 정렬) 뷰: up을 +Y로 고정하고 +Z 방향에서 바라봅니다.
+  // (isometric(1,1,1)보다 "정면이 보이게" 체감이 좋고, backface culling 이슈도 덜 헷갈립니다)
+  camera.up.set(0, 1, 0);
+  const direction = new THREE.Vector3(0, 0, 1);
 
   camera.position.copy(center.clone().add(direction.multiplyScalar(dist * 1.5 + 0.1)));
   camera.near = Math.max(0.01, dist / 100);
   camera.far = Math.max(1000, dist * 100);
   camera.updateProjectionMatrix();
+
+  // OrbitControls 줌 범위는 모델 크기에 맞게 동적으로 설정해야 합니다.
+  // (고정 min/maxDistance면 큰 모델에서 줌이 "안 되는 것처럼" 느껴지거나, 작은 모델에서 더 못 들어갑니다)
+  controls.minDistance = Math.max(0.001, dist / 1000);
+  controls.maxDistance = Math.max(dist * 10, controls.minDistance * 10);
+  controls.zoomSpeed = 1.0;
 
   controls.update();
 }
@@ -198,8 +207,9 @@ export const SketchupViewer = React.forwardRef<SketchupViewerRef, SketchupViewer
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
-    controls.minDistance = 1;
-    controls.maxDistance = 100;
+    // 초기값은 넉넉하게 두고, 모델 로드 후 autoFrameModel에서 모델 크기에 맞게 재설정합니다.
+    controls.minDistance = 0.001;
+    controls.maxDistance = 1_000_000;
     // 더블 클릭 이벤트 비활성화 (클릭 이벤트와 충돌 방지)
     controls.enablePan = true;
     controls.enableZoom = true;
@@ -438,6 +448,31 @@ export const SketchupViewer = React.forwardRef<SketchupViewerRef, SketchupViewer
       if (cancelled) return;
       // clone to allow multiple viewers same url
       const cloned = root.clone(true);
+
+      // SketchUp 좌표계는 기본적으로 Z-up(파란축이 위)이고, Three.js는 Y-up입니다.
+      // 그대로 렌더링하면 "처음에 위에서 내려다보는" 것처럼 느껴질 수 있어,
+      // Z-up -> Y-up으로 맞추는 회전을 적용합니다.
+      // (x축 기준 -90도 회전: Z가 Y로 올라오고, Y가 -Z로 이동)
+      cloned.rotation.x = -Math.PI / 2;
+      cloned.updateMatrixWorld(true);
+
+      // SketchUp/OBJ/Assimp 경로에서 "얇은 면(벽/천장 등)"은 단면일 때가 많아,
+      // glTF 기본 설정(단면 렌더링)에서는 각도에 따라 일부가 "사라진 것처럼" 보일 수 있습니다.
+      // 그래서 뷰어 레벨에서 double-sided를 강제해 사용자 체감을 개선합니다.
+      cloned.traverse((obj) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const mesh = obj as any;
+        if (!mesh || !mesh.isMesh) return;
+        const material = mesh.material;
+        const setDoubleSide = (m: any) => {
+          if (!m) return;
+          m.side = THREE.DoubleSide;
+          m.needsUpdate = true;
+        };
+        if (Array.isArray(material)) material.forEach(setDoubleSide);
+        else setDoubleSide(material);
+      });
+
       modelRootRef.current = cloned;
       scene.add(cloned);
 
@@ -474,12 +509,17 @@ export const SketchupViewer = React.forwardRef<SketchupViewerRef, SketchupViewer
     for (const [id, marker] of markers.entries()) {
       if (!currentIds.has(id)) {
         pinpointsGroup.remove(marker);
-        marker.geometry?.dispose();
-        if (Array.isArray(marker.material)) {
-          marker.material.forEach(m => m.dispose());
-        } else {
-          marker.material?.dispose();
-        }
+        // marker는 Group일 수 있으므로 안전하게 traverse하며 자원을 해제
+        marker.traverse((obj) => {
+          if (obj instanceof THREE.Mesh) {
+            obj.geometry?.dispose();
+            const mat = obj.material;
+            if (Array.isArray(mat)) mat.forEach((m: THREE.Material) => m.dispose());
+            else mat?.dispose();
+          } else if (obj instanceof THREE.Sprite) {
+            obj.material?.dispose();
+          }
+        });
         markers.delete(id);
       }
     }
