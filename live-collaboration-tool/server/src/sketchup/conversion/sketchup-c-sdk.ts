@@ -1,7 +1,7 @@
 import { existsSync } from "fs";
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { dirname } from "path";
+import { dirname, resolve } from "path";
 import { promises as fs } from "fs";
 
 const execFileAsync = promisify(execFile);
@@ -89,7 +89,8 @@ export async function convertSkpToIntermediateWithSketchupCSDK({
       ].join("\n")
     );
   }
-  const bin = normalizeEnvPath(rawBin);
+  // 상대 경로인 경우 process.cwd() 기준으로 절대 경로로 변환
+  const bin = resolve(process.cwd(), normalizeEnvPath(rawBin));
 
   // 출력 디렉토리 보장
   await fs.mkdir(outputDirForFile, { recursive: true }).catch(() => {});

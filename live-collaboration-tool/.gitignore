@@ -14,3 +14,6 @@ coverage
 
 # 테스트 프로젝트
 test-lib-usage/
+
+# SketchUp C SDK 원본 폴더 (필요한 부분은 tools/sketchup-csdk-converter/frameworks/ 에 번들됨)
+SDK_Mac_*/
